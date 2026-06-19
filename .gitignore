@@ -1,0 +1,10 @@
+# No trailing slashes: also ignores symlinks named .venv/models (a worktree
+# 'git add -A' once staged self-referential symlinks and clobbered the real dirs).
+.venv
+models
+__pycache__/
+*.pyc
+.DS_Store
+dist/
+build/
+*.egg-info/
