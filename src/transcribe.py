@@ -95,9 +95,11 @@ def transcribe(audio: np.ndarray, precomputed_peak: float = 0.0) -> str:
 
     result = mlx_whisper.transcribe(audio, path_or_hf_repo=MODEL_PATH, **_DECODE_PARAMS)
 
-    # Telemetry: log when the fallback retry actually fired (a segment decoded at
-    # t>0). If this proves to essentially never fire in real use, the schedule can
-    # be dropped to a single greedy pass (temperature=0.0) with data behind it.
+    # Local diagnostics: write a line to the local log file when the fallback
+    # retry actually fired (a segment decoded at t>0). Stays on this machine —
+    # nothing is sent anywhere. If this proves to essentially never fire in real
+    # use, the schedule can be dropped to a single greedy pass (temperature=0.0)
+    # with data behind it.
     escalated = [s for s in (result.get("segments") or [])
                  if s.get("temperature", 0.0) > 0.0]
     if escalated:
