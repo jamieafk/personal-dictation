@@ -121,6 +121,9 @@ class DictationApp(rumps.App):
         self._hotkey_ok = True
         self._perm_item = None      # menu item shown only when the hotkey is disabled
         self._recheck_timer = None  # polls for Accessibility grant to self-heal
+        self._tap_watch_timer = None  # warns if the tap never sees a key event
+        self._tap_silent_warned = False
+        self._tap_watch_ticks = 0
 
         # Menu items
         self._last_text_item = rumps.MenuItem(LAST_TEXT_PLACEHOLDER)
@@ -478,6 +481,7 @@ class DictationApp(rumps.App):
         if hotkey.setup_hotkey(self._on_press, self._on_release, self._on_cancel, self._on_tap_lost):
             self._hotkey_ok = True
             log.info("Accessibility granted — hotkey enabled")
+            self._start_tap_watch()
             self.title = self._title_for(self._state)
             if self._perm_item is not None:
                 try:
@@ -488,6 +492,33 @@ class DictationApp(rumps.App):
             if self._recheck_timer is not None:
                 self._recheck_timer.stop()
                 self._recheck_timer = None
+
+    def _start_tap_watch(self):
+        """Main thread: a tap can be created yet receive nothing when the Input
+        Monitoring grant is stale, so watch for the first key event."""
+        if self._tap_watch_timer is None:
+            self._tap_watch_ticks = 0
+            self._tap_watch_timer = rumps.Timer(self._check_tap_alive, config.HOTKEY_SILENT_WARN_S)
+            self._tap_watch_timer.start()
+
+    @_logged
+    def _check_tap_alive(self, _):
+        # rumps.Timer fires once immediately on start; ignore that tick.
+        self._tap_watch_ticks += 1
+        if self._tap_watch_timer is None or self._tap_watch_ticks == 1:
+            return
+        if hotkey.events_seen() > 0:
+            if self._tap_silent_warned:
+                log.info("Hotkey tap now receiving key events")
+            self._tap_watch_timer.stop()
+            self._tap_watch_timer = None
+        elif not self._tap_silent_warned:
+            self._tap_silent_warned = True
+            log.warning(
+                "Hotkey tap has received no key events for %.0fs — Input Monitoring grant is "
+                "likely stale (e.g. after a rebuild). Fix: tccutil reset ListenEvent/PostEvent/"
+                "Accessibility com.personal.dictation, relaunch, re-grant.",
+                config.HOTKEY_SILENT_WARN_S)
 
     @_logged
     def _quit(self, _):
@@ -515,6 +546,7 @@ class DictationApp(rumps.App):
         # the broken state visible and recoverable instead of silently showing "ready".
         if hotkey.setup_hotkey(self._on_press, self._on_release, self._on_cancel, self._on_tap_lost):
             self._hotkey_ok = True
+            self._start_tap_watch()
         else:
             self._hotkey_ok = False
             log.warning("Accessibility permission not granted — hotkey disabled")

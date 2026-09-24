@@ -17,6 +17,7 @@ ALL_TESTS = [
     "test_app_lifecycle",
     "test_postprocessing",
     "test_segmenter",
+    "test_hotkey",
 ]
 
 # Run a subset by passing module names, e.g.:

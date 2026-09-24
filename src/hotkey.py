@@ -22,6 +22,7 @@ _tap = None
 # Tap health monitoring
 _timeout_count = 0
 _timeout_window_start = 0.0
+_events_seen = 0  # a created tap can still be starved by a stale Input Monitoring grant
 
 # Callbacks set by setup_hotkey()
 _on_press: Optional[Callable] = None
@@ -33,7 +34,7 @@ _on_tap_lost: Optional[Callable] = None  # Called when tap appears broken
 def _event_callback(proxy, event_type, event, refcon):
     """CGEvent tap callback. Fires on the main thread."""
     global _last_flags, _press_time, _is_pressed
-    global _timeout_count, _timeout_window_start
+    global _timeout_count, _timeout_window_start, _events_seen
 
     # Re-enable tap if macOS disabled it due to timeout
     if event_type == Quartz.kCGEventTapDisabledByTimeout:
@@ -51,6 +52,8 @@ def _event_callback(proxy, event_type, event, refcon):
             _on_tap_lost()
 
         return event
+
+    _events_seen += 1
 
     # Escape key cancels recording
     if event_type == Quartz.kCGEventKeyDown and _is_pressed:
@@ -95,6 +98,11 @@ def _event_callback(proxy, event_type, event, refcon):
 
     _last_flags = flags
     return event
+
+
+def events_seen() -> int:
+    """Key events the tap has delivered since launch (0 = likely stale TCC grant)."""
+    return _events_seen
 
 
 def setup_hotkey(

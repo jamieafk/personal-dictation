@@ -39,6 +39,9 @@ VAD_SPEAKING_FLOOR = 0.002     # RMS above this reads as "speaking" for the bars
 
 # How often to re-check for Accessibility permission once the hotkey is disabled.
 HOTKEY_RECHECK_S = 4.0
+# If the tap has delivered no key events this long after it was enabled, the
+# Input Monitoring grant is probably stale (e.g. after a py2app rebuild): warn in the log.
+HOTKEY_SILENT_WARN_S = 60.0
 
 # Streaming transcription (transcribe-while-you-hold). The segmenter closes a
 # speech segment at a natural pause once enough unsegmented audio has accrued,

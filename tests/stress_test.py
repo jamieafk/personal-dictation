@@ -530,6 +530,25 @@ def test_segmenter():
 
 
 # ============================================================
+# Test 10: Hotkey tap event counter (stale-grant watchdog signal)
+# ============================================================
+def test_hotkey():
+    print("\n=== Test 10: Hotkey Event Counter ===")
+    import Quartz
+    from src import hotkey
+
+    report("counter starts at zero", hotkey.events_seen() == 0)
+
+    ev = Quartz.CGEventCreateKeyboardEvent(None, 0, True)  # 'a' key, not the hotkey
+    hotkey._event_callback(None, Quartz.kCGEventKeyDown, ev, None)
+    hotkey._event_callback(None, Quartz.kCGEventFlagsChanged, ev, None)
+    report("key events are counted", hotkey.events_seen() == 2, f"got {hotkey.events_seen()}")
+
+    hotkey._event_callback(None, Quartz.kCGEventTapDisabledByTimeout, ev, None)
+    report("tap-timeout is not a key event", hotkey.events_seen() == 2, f"got {hotkey.events_seen()}")
+
+
+# ============================================================
 # Run all tests
 # ============================================================
 if __name__ == "__main__":
@@ -545,6 +564,7 @@ if __name__ == "__main__":
     test_app_lifecycle()
     test_postprocessing()
     test_segmenter()
+    test_hotkey()
 
     print("\n" + "=" * 50)
     print(f"Results: {PASS} passed, {FAIL} failed")
