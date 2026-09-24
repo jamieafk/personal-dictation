@@ -17,7 +17,7 @@ DICTATION_DEBUG=1 python -m src
 
 ## Permissions
 
-Grant **Accessibility** (CGEvent tap + AppleScript paste) and **Microphone** to `Personal Dictation.app`. Debugging from Terminal: grant them to Terminal instead.
+Grant **Input Monitoring** (hotkey CGEvent tap), **Accessibility** (CGEvent Cmd+V paste) and **Microphone** to `Personal Dictation.app`. Debugging from Terminal: grant them to Terminal instead. After any rebuild these grants go stale; see Common Mistakes.
 
 ## Architecture
 
@@ -26,12 +26,12 @@ Grant **Accessibility** (CGEvent tap + AppleScript paste) and **Microphone** to 
 - `audio.py` — sounddevice capture at native rate, downsample to 16kHz; streaming accessors `samples_captured`/`recent_peak`/`extract_16k`/`stop_stream`
 - `segmenter.py` — streaming: closes speech segments at pauses during the hold, transcribes in background (poll thread + serial worker)
 - `postprocess.py` — fuzzy vocab, filler removal, stutter collapse
-- `paste.py` — clipboard save/restore + AppleScript paste
+- `paste.py` — clipboard save/restore + CGEvent Cmd+V (needs PostEvent, granted via Accessibility)
 - `overlay.py` — floating waveform NSPanel: recording, processing-pulse, discard modes
 - `config.py` — single source of truth: `CONFIG_DIR` + all behavioral tunables (paste delay, gain cap, thresholds, streaming)
 - `launch.py` (root) — py2app entry point, sets sys.path, imports `src.app`
 
-**Threads:** main (rumps NSApplication run loop + CGEvent tap callback, must stay <1ms) / audio (PortAudio) / processing (per-dictation daemon thread: inference + paste) / warmup (one-shot model JIT at startup).
+**Threads:** main (rumps NSApplication run loop + CGEvent tap callback, must stay <1ms) / audio (PortAudio) / segmenter poll + serial worker (streaming, during the hold) / processing (per-dictation daemon thread: finalize + paste) / warmup (one-shot model JIT at startup).
 
 **CGEvent tap + rumps:** tap's CFMachPort is added to `CFRunLoopGetMain()` before `NSApplication.run()`; works because rumps drives the same main CFRunLoop.
 
@@ -41,8 +41,8 @@ Grant **Accessibility** (CGEvent tap + AppleScript paste) and **Microphone** to 
 - **Don't revert `temperature` to mlx-whisper's default** — keep `(0.0, 0.2)` + pinned thresholds in `transcribe._DECODE_PARAMS` (see Decisions).
 - **All AppKit ops from background threads go through `AppHelper.callAfter()`** — NSPanel, NSTimer, AND `self.title` (rumps → `NSStatusItem.setTitle_`). Direct calls from the processing thread crash. `_set_state` dispatches via `_apply_title`.
 - **py2app alias mode needs rebuild after new dependencies** — symlinks source, not new packages.
-- **py2app alias mode needs rebuild after moving the folder**: `__boot__.py` and `Info.plist` bake in the absolute source path, so the old bundle segfaults on launch (2026-09-24). Rebuild, then re-check Accessibility and Microphone permissions.
-- **Any rebuild invalidates privacy grants** — the ad-hoc signature's cdhash changes, but System Settings still shows the toggles ON. Symptoms: hotkey dead with no log error (Input Monitoring), then transcribes but never pastes (PostEvent, shown under Accessibility). Toggling isn't enough; reset all three, relaunch, re-grant Accessibility + Input Monitoring:
+- **py2app alias mode needs rebuild after moving the folder**: `__boot__.py` and `Info.plist` bake in the absolute source path, so the old bundle segfaults on launch (2026-09-24). Rebuild, then reset privacy grants (next entry).
+- **Any rebuild invalidates privacy grants** — the ad-hoc signature's cdhash changes, but System Settings still shows the toggles ON. Symptoms: hotkey dead (Input Monitoring; the tap watchdog logs `Hotkey tap has received no key events` after `HOTKEY_SILENT_WARN_S`), then transcribes but never pastes (PostEvent, shown under Accessibility). Toggling isn't enough; reset all three, relaunch, re-grant Accessibility + Input Monitoring:
   `for s in ListenEvent PostEvent Accessibility; do tccutil reset $s com.personal.dictation; done`
   Confirm with `log show --last 5m --predicate 'subsystem == "com.apple.TCC" AND eventMessage CONTAINS "Failed to match"'`.
 - **PyObjC selector naming:** underscores map to multi-arg selectors; use camelCase for single-arg methods (`updateLevel_`, not `update_level_`).
