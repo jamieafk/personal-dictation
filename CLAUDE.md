@@ -42,6 +42,9 @@ Grant **Accessibility** (CGEvent tap + AppleScript paste) and **Microphone** to 
 - **All AppKit ops from background threads go through `AppHelper.callAfter()`** — NSPanel, NSTimer, AND `self.title` (rumps → `NSStatusItem.setTitle_`). Direct calls from the processing thread crash. `_set_state` dispatches via `_apply_title`.
 - **py2app alias mode needs rebuild after new dependencies** — symlinks source, not new packages.
 - **py2app alias mode needs rebuild after moving the folder**: `__boot__.py` and `Info.plist` bake in the absolute source path, so the old bundle segfaults on launch (2026-09-24). Rebuild, then re-check Accessibility and Microphone permissions.
+- **Any rebuild invalidates privacy grants** — the ad-hoc signature's cdhash changes, but System Settings still shows the toggles ON. Symptoms: hotkey dead with no log error (Input Monitoring), then transcribes but never pastes (PostEvent, shown under Accessibility). Toggling isn't enough; reset all three, relaunch, re-grant Accessibility + Input Monitoring:
+  `for s in ListenEvent PostEvent Accessibility; do tccutil reset $s com.personal.dictation; done`
+  Confirm with `log show --last 5m --predicate 'subsystem == "com.apple.TCC" AND eventMessage CONTAINS "Failed to match"'`.
 - **PyObjC selector naming:** underscores map to multi-arg selectors; use camelCase for single-arg methods (`updateLevel_`, not `update_level_`).
 - **Python floats through ObjC dispatch become NSNumber** — keep numeric math in pure Python, not ObjC-bridged methods.
 - **NSPasteboard ops must handle None items/types.**
