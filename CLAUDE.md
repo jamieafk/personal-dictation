@@ -41,6 +41,7 @@ Grant **Accessibility** (CGEvent tap + AppleScript paste) and **Microphone** to 
 - **Don't revert `temperature` to mlx-whisper's default** — keep `(0.0, 0.2)` + pinned thresholds in `transcribe._DECODE_PARAMS` (see Decisions).
 - **All AppKit ops from background threads go through `AppHelper.callAfter()`** — NSPanel, NSTimer, AND `self.title` (rumps → `NSStatusItem.setTitle_`). Direct calls from the processing thread crash. `_set_state` dispatches via `_apply_title`.
 - **py2app alias mode needs rebuild after new dependencies** — symlinks source, not new packages.
+- **py2app alias mode needs rebuild after moving the folder**: `__boot__.py` and `Info.plist` bake in the absolute source path, so the old bundle segfaults on launch (2026-09-24). Rebuild, then re-check Accessibility and Microphone permissions.
 - **PyObjC selector naming:** underscores map to multi-arg selectors; use camelCase for single-arg methods (`updateLevel_`, not `update_level_`).
 - **Python floats through ObjC dispatch become NSNumber** — keep numeric math in pure Python, not ObjC-bridged methods.
 - **NSPasteboard ops must handle None items/types.**
