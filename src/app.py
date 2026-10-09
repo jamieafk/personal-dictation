@@ -368,14 +368,19 @@ class DictationApp(rumps.App):
                 AppHelper.callAfter(HistoryWindowController.refresh_if_visible)
                 AppHelper.callAfter(self._overlay.hide)
             else:
-                log.info("Dictation discarded (no content) in %.0fms from %s (streaming)",
-                         elapsed_ms, app_name)
                 # Retain the reconstructed audio so a transient miss can be retried.
                 if len(full) > 0:
                     self._failed_buf = full
                     self._failed_app = app_name
                     AppHelper.callAfter(self._enable_retry)
                 AppHelper.callAfter(self._overlay.flash_discard)
+                # Logged after the flash so the diagnostics never delay feedback.
+                # max_speech_prob near Silero's 0.5 threshold on a long hold = likely
+                # a false rejection worth tuning for.
+                peak, prob = transcribe.speech_stats(full)
+                log.info("Dictation discarded (no content) in %.0fms from %s (streaming): "
+                         "hold=%.1fs peak=%.3f max_speech_prob=%.2f",
+                         elapsed_ms, app_name, len(full) / 16000, peak, prob)
         except Exception as e:
             log.exception("Streaming transcription error")
             full = self._segmenter.full_audio()

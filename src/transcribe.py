@@ -71,6 +71,23 @@ def _has_speech(audio: np.ndarray) -> bool:
     return len(timestamps) > 0
 
 
+def speech_stats(audio: np.ndarray):
+    """(raw peak, max Silero speech probability) for a discarded clip — logged so
+    false VAD rejections can be told apart from accidental holds. ~60ms per 20s.
+    Only call when no transcribe is running (shares the VAD model's state)."""
+    global _vad_model
+    if len(audio) < 512:
+        return 0.0, 0.0
+    if _vad_model is None:
+        _vad_model = load_silero_vad(onnx=True)
+    tensor = torch.from_numpy(audio.astype(np.float32))
+    _vad_model.reset_states()
+    prob = max(float(_vad_model(tensor[i:i + 512], 16000))
+               for i in range(0, len(tensor) - 511, 512))
+    _vad_model.reset_states()
+    return float(np.max(np.abs(audio))), prob
+
+
 def warmup():
     """Run a silent sample through the model to JIT-compile MLX kernels."""
     global _model_loaded, _vad_model

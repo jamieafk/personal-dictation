@@ -252,6 +252,14 @@ def test_transcription():
     avg = sum(timings) / len(timings)
     report(f"20x transcriptions avg={avg*1000:.0f}ms", max(timings) < 2.0)
 
+    # Discard diagnostics
+    from src.transcribe import speech_stats
+    peak, prob = speech_stats(np.zeros(16000, dtype=np.float32))
+    report("speech_stats on silence", peak == 0.0 and 0.0 <= prob < 0.5, f"{peak} {prob}")
+    report("speech_stats on tiny clip", speech_stats(np.zeros(10, dtype=np.float32)) == (0.0, 0.0))
+    report("VAD still works after speech_stats",
+           transcribe(np.zeros(16000, dtype=np.float32)) == "")
+
 
 # ============================================================
 # Test 6: Memory leak detection
