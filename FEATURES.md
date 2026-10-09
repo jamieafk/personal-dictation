@@ -1,5 +1,11 @@
 # Features
 
+- **Near-instant paste after a pause** (2026-10-09) — Pause briefly before releasing the hotkey and the text lands almost immediately: the app transcribes what you've said during the pause, so release just pastes it.
+  - Measured with the real model: ~0.3s → ~0.015s when you pause ~0.8s before releasing. Releasing mid-sentence behaves as before.
+  - Reuses the early transcript only when nothing after it sounds like speech, so a soft last word is never dropped.
+  - Every release is also ~0.15s faster (a hidden wait in the release path is gone), and the speech model now stays in memory so it isn't slow after a long break.
+  - Why: The wait after release is the part of dictation you feel every time.
+
 - **Choose your hotkey** (2026-10-09) — Menubar → Settings… (⌘,): click the key button and press the key you want to hold to dictate.
   - Allows modifiers (either Option/Command/Control/Shift, Fn) and non-typing keys (F1–F20, arrows, Home/End). Keys that type text, Escape and Caps Lock are rejected with an inline reason.
   - Function keys are blocked from reaching the focused app so they only trigger dictation. Applies instantly, survives restarts.
