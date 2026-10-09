@@ -32,7 +32,7 @@ def save_clipboard():
         return saved
     for item in items:
         item_data = []
-        for t in item.types():
+        for t in item.types() or []:
             data = item.dataForType_(t)
             if data is not None:
                 item_data.append((t, data))

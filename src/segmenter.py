@@ -39,17 +39,31 @@ _POLL_JOIN_TIMEOUT_S = 2.0
 
 _SEG = "seg"
 _SPEC = "spec"
-_Spec = namedtuple("_Spec", "start end text")  # finished speculation of native [start, end)
+# Finished speculation of native [start, end); floor = median 32ms-frame RMS of the
+# pause that triggered it (the room's noise level, for the reuse energy check).
+_Spec = namedtuple("_Spec", "start end text floor")
+_RATE = 16000   # transcribe_fn input rate
+_FRAME = 512    # 32ms energy frames
+
+
+def _frame_rms(audio):
+    """RMS per 32ms frame; a trailing partial frame counts if it's at least 8ms."""
+    k, r = divmod(len(audio), _FRAME)
+    rms = list(np.sqrt(np.mean(audio[:k * _FRAME].reshape(k, _FRAME) ** 2, axis=1))) if k else []
+    if r and (r >= _FRAME // 4 or not k):
+        rms.append(float(np.sqrt(np.mean(audio[k * _FRAME:] ** 2))))
+    return np.asarray(rms, dtype=np.float64)
 
 
 class StreamingSegmenter:
     def __init__(self, audio_src, transcribe_fn, *, speech_fn=None, poll_s=None, min_seg_s=None,
-                 max_seg_s=None, silence_peak=None, silence_win_s=None, spec_win_s=None):
+                 max_seg_s=None, silence_peak=None, silence_win_s=None, spec_win_s=None,
+                 floor_ratio=None):
         # audio_src: samples_captured(), recent_peak(w), peak_between(s,e), extract_16k(s,e), native_rate()
         self._audio = audio_src
         self._transcribe = transcribe_fn  # transcribe_fn(audio_16k) -> str
-        # speech_fn(audio_16k) -> bool enables speculative tails; it vetoes reusing a
-        # speculation when the audio after it holds speech too quiet for the peak check.
+        # speech_fn(audio_16k) -> bool enables speculative tails; with the peak and
+        # energy checks it vetoes reusing a speculation if anything followed it.
         self._speech_fn = speech_fn
         self._poll_s = poll_s if poll_s is not None else config.STREAM_POLL_S
         self._min_seg_s = min_seg_s if min_seg_s is not None else config.STREAM_MIN_SEG_S
@@ -57,8 +71,10 @@ class StreamingSegmenter:
         self._silence_peak = silence_peak if silence_peak is not None else config.STREAM_SILENCE_PEAK
         self._silence_win_s = silence_win_s if silence_win_s is not None else config.STREAM_SILENCE_WIN_S
         self._spec_win_s = spec_win_s if spec_win_s is not None else config.STREAM_SPEC_SILENCE_S
+        self._floor_ratio = floor_ratio if floor_ratio is not None else config.STREAM_SPEC_FLOOR_RATIO
 
         self._lock = threading.Lock()
+        self._retired = None  # a cancelled session's worker; the next worker joins it first
         self._reset_state()
 
     def _reset_state(self):
@@ -66,7 +82,7 @@ class StreamingSegmenter:
         self._seg_start_native = 0
         self._results = {}        # idx -> transcribed text
         self._seg_audio = {}      # idx -> 16k audio (for retry/fallback reconstruction)
-        self._spec = {"latest": None, "runs": 0, "hit_idx": set()}
+        self._spec = {"latest": None, "runs": 0, "hit_idx": set(), "why": {}}
         self._queue = queue.Queue()
         self._stop = threading.Event()
         self._poll = None
@@ -79,9 +95,10 @@ class StreamingSegmenter:
         prime: optional callable run first on the worker (serial with segment
         transcribes), e.g. a model re-warm that overlaps with the user speaking."""
         with self._lock:
+            prev, self._retired = self._retired, None
             self._reset_state()
             self._worker = threading.Thread(
-                target=self._worker_loop, args=(self._queue, self._results, self._spec, prime),
+                target=self._worker_loop, args=(self._queue, self._results, self._spec, prime, prev),
                 daemon=True)
             self._worker.start()
             self._poll = threading.Thread(target=self._poll_loop, args=(self._stop,), daemon=True)
@@ -120,7 +137,9 @@ class StreamingSegmenter:
         return " ".join(p for p in parts if p).strip()
 
     def cancel(self):
-        """Discard everything and stop threads. Call on Escape-cancel."""
+        """Discard everything and stop threads. Call on Escape-cancel / quick tap
+        (main thread), so it never waits on a decode: the worker is retired and the
+        next session's worker joins it before decoding, keeping the GPU serial."""
         self.stop_polling()
         try:
             while True:
@@ -128,27 +147,31 @@ class StreamingSegmenter:
                 self._queue.task_done()
         except queue.Empty:
             pass
-        self._queue.put(None)
-        worker = self._worker
-        if worker is not None and worker is not threading.current_thread():
-            worker.join(timeout=_POLL_JOIN_TIMEOUT_S)
-        with self._lock:
-            self._reset_state()
+        self._retire()
 
     def reset(self):
         """Drop the finished session's results and retained audio. Call after
         finalize, once anything kept for retry has been copied out, and before the
         app returns to IDLE (a new press must not race this)."""
+        self._retire()
+
+    def _retire(self):
+        self._queue.put(None)  # releases a worker still waiting (no-op after finalize)
         with self._lock:
+            worker = self._worker
             self._reset_state()
+            if worker is not None and worker.is_alive() and worker is not threading.current_thread():
+                self._retired = worker
 
     def spec_stats(self):
-        """(tail outcome 'hit'|'miss'|'none', speculative decodes run) for the
-        finished session — logged so speculation can be tuned from real use."""
+        """(tail outcome 'hit'|'miss(<why>)'|'none', speculative decodes run) for
+        the finished session — logged so speculation can be tuned from real use."""
         with self._lock:
             runs = self._spec["runs"]
-            hit = (self._seg_index - 1) in self._spec["hit_idx"]
-        return ("hit" if hit else "miss" if runs else "none"), runs
+            tail = self._seg_index - 1
+            hit = tail in self._spec["hit_idx"]
+            why = self._spec["why"].get(tail, "stale")
+        return ("hit" if hit else f"miss({why})" if runs else "none"), runs
 
     def full_audio(self):
         """Concatenated 16k audio of all segments, in order — for retry/fallback."""
@@ -196,8 +219,12 @@ class StreamingSegmenter:
         with self._lock:
             start = self._seg_start_native
             latest = self._spec["latest"]
-        if now_native - start <= int(self._spec_win_s * rate):
+        pending = now_native - start
+        if pending <= int(self._spec_win_s * rate):
             return None                    # nothing before the pause yet
+        if pending >= int(self._min_seg_s * rate):
+            return None                    # long pending audio: costly to re-decode, and a
+                                           # pause now closes a real segment anyway
         if self._queue.unfinished_tasks:   # worker busy, or a speculation already pending
             return None
         if self._audio.recent_peak(self._spec_win_s) >= self._silence_peak:
@@ -208,18 +235,27 @@ class StreamingSegmenter:
         self._queue.put((_SPEC, None, start, now_native, self._audio.extract_16k(start, now_native)))
         return "spec"
 
-    def _reuse_spec(self, spec, start, end, audio):
+    def _reuse_spec(self, spec, idx, start, end, audio):
         """The speculative text for segment [start, end) if a speculation covered
-        its start and everything after it is silent (quiet AND no VAD speech), else
-        None. Runs on the worker, so the VAD model is never used concurrently."""
+        its start and everything after it is silent, else None. Silent = under the
+        absolute pause peak AND no 32ms frame louder than the pause's own noise floor
+        × floor_ratio AND speech_fn finds nothing. Wrongly reusing drops words, a
+        miss only costs latency, so every check errs toward a miss. Runs on the
+        worker, so the VAD model is never used concurrently."""
         with self._lock:
             latest = spec["latest"]
         if latest is None or latest.start != start or not start < latest.end <= end:
             return None
         rest = audio[round(len(audio) * (latest.end - start) / (end - start)):]
-        if len(rest) and (float(np.max(np.abs(rest))) >= self._silence_peak
-                          or self._speech_fn(rest)):
-            return None
+        if len(rest):
+            ratio = float(_frame_rms(rest).max()) / max(latest.floor, 1e-4)
+            why = ("peak" if float(np.max(np.abs(rest))) >= self._silence_peak
+                   else f"energy={ratio:.2f}" if ratio > self._floor_ratio
+                   else "vad" if self._speech_fn(rest) else None)
+            if why:
+                with self._lock:
+                    spec["why"][idx] = why
+                return None
         return latest.text
 
     def _close_segment(self, end_native):
@@ -236,10 +272,12 @@ class StreamingSegmenter:
         self._queue.put((_SEG, idx, start, end_native, seg_audio))
         log.debug("Segment %d closed (%d samples)", idx, len(seg_audio))
 
-    def _worker_loop(self, q, results, spec, prime):
-        # q/results/spec are this session's objects, bound at start: if cancel()
-        # times out joining a busy worker and resets state, the stale worker must
-        # not consume the next session's queue or write into its results.
+    def _worker_loop(self, q, results, spec, prime, prev):
+        # q/results/spec are this session's objects, bound at start: a cancelled
+        # session's worker may still be finishing a decode, and must not consume the
+        # next session's queue or write into its results.
+        if prev is not None:
+            prev.join(timeout=_WORKER_JOIN_TIMEOUT_S)  # one decode on the GPU at a time
         if prime is not None:
             try:
                 prime()
@@ -254,17 +292,21 @@ class StreamingSegmenter:
             if kind == _SPEC:
                 try:
                     text = self._transcribe(seg_audio)
+                    pause = seg_audio[-int(self._spec_win_s * _RATE):]
+                    floor = float(np.median(_frame_rms(pause))) if len(pause) else 0.0
                     with self._lock:
-                        spec["latest"] = _Spec(start, end, text)
+                        spec["latest"] = _Spec(start, end, text, floor)
                         spec["runs"] += 1
                 except Exception:
                     log.exception("Speculative transcription failed")
                 q.task_done()
                 continue
             try:
-                text = self._reuse_spec(spec, start, end, seg_audio)
+                text = self._reuse_spec(spec, idx, start, end, seg_audio)
             except Exception:
                 log.exception("Speculation check failed; decoding segment %d normally", idx)
+                with self._lock:
+                    spec["why"][idx] = "error"
                 text = None
             try:
                 if text is not None:

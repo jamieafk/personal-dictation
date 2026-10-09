@@ -72,13 +72,12 @@ def has_speech(audio: np.ndarray) -> bool:
     return len(timestamps) > 0
 
 
-def speech_stats(audio: np.ndarray):
-    """(raw peak, max Silero speech probability) for a discarded clip — logged so
-    false VAD rejections can be told apart from accidental holds. ~60ms per 20s.
-    Only call when no transcribe is running (shares the VAD model's state)."""
+def max_speech_prob(audio: np.ndarray) -> float:
+    """Highest Silero per-frame (32ms) speech probability. ~60ms per 20s. Only
+    call when no transcribe is running (shares the VAD model's state)."""
     global _vad_model
     if len(audio) < 512:
-        return 0.0, 0.0
+        return 0.0
     if _vad_model is None:
         _vad_model = load_silero_vad(onnx=True)
     tensor = torch.from_numpy(audio.astype(np.float32))
@@ -86,7 +85,21 @@ def speech_stats(audio: np.ndarray):
     prob = max(float(_vad_model(tensor[i:i + 512], 16000))
                for i in range(0, len(tensor) - 511, 512))
     _vad_model.reset_states()
-    return float(np.max(np.abs(audio))), prob
+    return prob
+
+
+def might_be_speech(audio: np.ndarray) -> bool:
+    """Stricter than has_speech: any single frame at Silero's 0.5 threshold, no
+    250ms minimum. For vetoes where a false "silent" would drop words."""
+    return max_speech_prob(audio) >= 0.5
+
+
+def speech_stats(audio: np.ndarray):
+    """(raw peak, max Silero speech probability) for a discarded clip — logged so
+    false VAD rejections can be told apart from accidental holds."""
+    if len(audio) < 512:
+        return 0.0, 0.0
+    return float(np.max(np.abs(audio))), max_speech_prob(audio)
 
 
 def _wire_model_memory():

@@ -66,6 +66,10 @@ STREAM_POLL_S = 0.1            # how often the segmenter checks for a pause (che
 # more wasted decodes at mid-sentence pauses. False disables it.
 STREAM_SPECULATE = True
 STREAM_SPEC_SILENCE_S = 0.3
+# Reuse a speculation only if no 32ms frame after it is louder than the pause's noise
+# floor × this. Measured (Gaussian floor): noise alone 1.04–1.09; TTS words quieter
+# than the noise PEAK 1.16–1.76; normal speech 2–7. Raise only with log evidence.
+STREAM_SPEC_FLOOR_RATIO = 1.15
 
 # Sound within this long before release means the user was still speaking: wait this
 # long for in-flight input buffers (1024-frame block + device latency) so the last

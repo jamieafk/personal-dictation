@@ -117,7 +117,7 @@ class DictationApp(rumps.App):
         # VAD guard via transcribe.transcribe. speech_fn enables speculative tails.
         self._segmenter = StreamingSegmenter(
             audio, transcribe.transcribe,
-            speech_fn=transcribe.has_speech if config.STREAM_SPECULATE else None)
+            speech_fn=transcribe.might_be_speech if config.STREAM_SPECULATE else None)
 
         # Recovery state
         self._last_text = ""        # full text of the last successful dictation

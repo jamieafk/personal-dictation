@@ -610,14 +610,25 @@ def test_segmenter():
            out == ("spec", "t24000", [24000], ("hit", 1)), repr(out))
     out = spec_run(np.concatenate([talk, talk, hush, talk]), 24000, 32000)
     report("speech after speculation forces a full decode",
-           out == ("spec", "t32000", [24000, 32000], ("miss", 1)), repr(out))
+           out == ("spec", "t32000", [24000, 32000], ("miss(peak)", 1)), repr(out))
     out = spec_run(np.concatenate([talk, talk, hush, hush]), 24000, 32000, speech=lambda a: True)
     report("VAD speech after speculation vetoes reuse (quiet by peak)",
-           out == ("spec", "t32000", [24000, 32000], ("miss", 1)), repr(out))
+           out == ("spec", "t32000", [24000, 32000], ("miss(vad)", 1)), repr(out))
     def boom(a): raise RuntimeError("vad down")
     out = spec_run(np.concatenate([talk, talk, hush, hush]), 24000, 32000, speech=boom)
     report("failing speech check decodes instead of dropping the segment",
-           out == ("spec", "t32000", [24000, 32000], ("miss", 1)), repr(out))
+           out == ("spec", "t32000", [24000, 32000], ("miss(error)", 1)), repr(out))
+    rng = np.random.default_rng(7)
+    room = lambda n: rng.normal(0, 0.003, n).astype(np.float32)   # mic noise floor, peak ~0.012
+    out = spec_run(np.concatenate([talk, talk, room(16000)]), 24000, 32000)
+    report("room noise after speculation still reuses it",
+           out == ("spec", "t24000", [24000], ("hit", 1)), repr(out))
+    soft = (0.05 * np.sin(np.arange(4000) * 2 * np.pi * 220 / 16000)).astype(np.float32)
+    buf = np.concatenate([talk, talk, room(8000), room(2000), soft + room(4000), room(2000)])
+    out = spec_run(buf, 24000, 32000)
+    report("soft word under the peak threshold vetoed by energy",
+           out[:3] == ("spec", "t32000", [24000, 32000]) and out[3][0].startswith("miss(energy="),
+           repr(out))
     out = spec_run(np.concatenate([talk, talk, hush, hush]), 16000, 32000)
     report("no speculation while still speaking", out[0] is None and out[3] == ("none", 0), repr(out))
 
@@ -633,6 +644,29 @@ def test_segmenter():
            (first, again, after_talk) == ("spec", None, "spec"), repr((first, again, after_talk)))
     s = StreamingSegmenter(SpecAudio(np.concatenate([talk, hush])), lambda a: "w")
     report("speculation off without speech_fn", s._maybe_speculate(16000) is None)
+    s = StreamingSegmenter(SpecAudio(np.concatenate([talk, talk, talk, hush])), lambda a: "w",
+                           speech_fn=lambda a: False, min_seg_s=1.0, silence_peak=0.1)
+    report("no speculation once pending audio reaches MIN_SEG_S", s._maybe_speculate(32000) is None)
+
+    # --- cancel never waits on a decode; the next worker does, keeping decodes serial ---
+    events = []
+    def slow_tx(a):
+        events.append("old-start"); _t.sleep(0.4); events.append("old-end"); return "old"
+    segK = StreamingSegmenter(FakeAudio(), slow_tx, poll_s=60.0)
+    segK.start(); segK.close_tail(16000); _t.sleep(0.05)
+    t0 = _t.monotonic(); segK.cancel(); cancel_s = _t.monotonic() - t0
+    segK._transcribe = lambda a: events.append("new") or "new"
+    segK.start(); segK.stop_polling(); segK.close_tail(16000)
+    out = segK.finalize()
+    report("cancel returns without joining a busy worker", cancel_s < 0.1, f"{cancel_s * 1000:.0f}ms")
+    report("next session's decode waits for the retired one",
+           out == "new" and events == ["old-start", "old-end", "new"], repr((out, events)))
+
+    # --- reset releases a worker left waiting by an error before finalize ---
+    segE = StreamingSegmenter(FakeAudio(), lambda a: "x", poll_s=60.0)
+    segE.start(); segE.stop_polling(); w = segE._worker
+    segE.reset(); w.join(timeout=1.0)
+    report("reset releases a worker that never got finalize", not w.is_alive())
 
     # --- audio helpers behind speculation + pause logging ---
     from src import audio as au
