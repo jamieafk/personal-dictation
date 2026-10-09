@@ -564,14 +564,98 @@ def test_segmenter():
     finally:
         segmod._POLL_JOIN_TIMEOUT_S = old_timeout
 
+    # --- release wakes the poll thread instead of waiting out its sleep ---
+    segW = StreamingSegmenter(FakeAudio(), lambda a: "x", poll_s=1.0)
+    segW.start(); _t.sleep(0.05)
+    t0 = _t.monotonic(); segW.stop_polling(); waited = _t.monotonic() - t0
+    segW.cancel()
+    report("stop_polling wakes the poll thread", waited < 0.1, f"{waited * 1000:.0f}ms")
+
+    # --- reset drops the finished session's results and audio ---
+    segR = StreamingSegmenter(FakeAudio(), lambda a: "x")
+    segR.start(); segR.stop_polling(); segR.close_tail(16000)
+    first = segR.finalize()
+    segR.reset()
+    report("reset clears results and audio",
+           first == "x" and segR._assemble() == "" and len(segR.full_audio()) == 0)
+
+    # --- speculative tail: reuse only when nothing was said after it ---
+    class SpecAudio(FakeAudio):
+        """Buffer-backed: peaks come from the actual samples."""
+        def __init__(self, buf):
+            super().__init__(rate=16000); self.buffer = buf; self.samples = len(buf)
+        def peak_between(self, s, e):
+            seg = self.buffer[s:e]
+            return float(np.max(np.abs(seg))) if len(seg) else 0.0
+        def recent_peak(self, w):
+            return self.peak_between(max(0, self.samples - int(w * 16000)), self.samples)
+
+    def spec_run(buf, spec_at, release_at, speech=lambda a: False):
+        calls = []
+        sa = SpecAudio(buf)
+        s = StreamingSegmenter(sa, lambda a: calls.append(len(a)) or f"t{len(a)}",
+                               speech_fn=speech, poll_s=60.0, silence_peak=0.1, spec_win_s=0.3)
+        s.start()
+        sa.samples = spec_at
+        queued = s._maybe_speculate(spec_at)
+        s._queue.join()
+        sa.samples = release_at
+        s.stop_polling(); s.close_tail(release_at)
+        return queued, s.finalize(), calls, s.spec_stats()
+
+    talk = np.full(8000, 0.5, dtype=np.float32)    # 0.5s of "speech"
+    hush = np.zeros(8000, dtype=np.float32)        # 0.5s of silence
+    out = spec_run(np.concatenate([talk, talk, hush, hush]), 24000, 32000)
+    report("speculation reused when nothing said after it",
+           out == ("spec", "t24000", [24000], ("hit", 1)), repr(out))
+    out = spec_run(np.concatenate([talk, talk, hush, talk]), 24000, 32000)
+    report("speech after speculation forces a full decode",
+           out == ("spec", "t32000", [24000, 32000], ("miss", 1)), repr(out))
+    out = spec_run(np.concatenate([talk, talk, hush, hush]), 24000, 32000, speech=lambda a: True)
+    report("VAD speech after speculation vetoes reuse (quiet by peak)",
+           out == ("spec", "t32000", [24000, 32000], ("miss", 1)), repr(out))
+    out = spec_run(np.concatenate([talk, talk, hush, hush]), 16000, 32000)
+    report("no speculation while still speaking", out[0] is None and out[3] == ("none", 0), repr(out))
+
+    sa = SpecAudio(np.concatenate([talk, talk, hush, hush, talk, hush]))
+    s = StreamingSegmenter(sa, lambda a: "w", speech_fn=lambda a: False, poll_s=60.0,
+                           silence_peak=0.1, spec_win_s=0.3)
+    s.start()
+    sa.samples = 24000; first = s._maybe_speculate(24000); s._queue.join()
+    sa.samples = 32000; again = s._maybe_speculate(32000)
+    sa.samples = 48000; after_talk = s._maybe_speculate(48000); s._queue.join()
+    s.cancel()
+    report("no repeat speculation until something new is said",
+           (first, again, after_talk) == ("spec", None, "spec"), repr((first, again, after_talk)))
+    s = StreamingSegmenter(SpecAudio(np.concatenate([talk, hush])), lambda a: "w")
+    report("speculation off without speech_fn", s._maybe_speculate(16000) is None)
+
+    # --- audio helpers behind speculation + pause logging ---
+    from src import audio as au
+    saved_audio = (list(au._chunks), au._native_rate)
+    try:
+        au._chunks[:] = [np.zeros((1024, 1), np.float32), np.full((1024, 1), 0.5, np.float32),
+                         np.zeros((1024, 1), np.float32), np.zeros((1024, 1), np.float32)]
+        au._native_rate = 16000
+        report("peak_between sees only its range",
+               au.peak_between(0, 1024) == 0.0 and au.peak_between(1000, 1100) == 0.5
+               and au.peak_between(2048, 4096) == 0.0)
+        report("trailing_quiet_s measures the pause before end",
+               au.trailing_quiet_s(4096, 0.1) == 2048 / 16000
+               and au.trailing_quiet_s(1500, 0.1) == 0.0
+               and au.trailing_quiet_s(1000, 0.1) == 1000 / 16000)
+    finally:
+        au._chunks[:] = saved_audio[0]
+        au._native_rate = saved_audio[1]
+
     # --- rewarm only fires after idle ---
     from src import transcribe as tx
     fired = []
-    orig = (tx._model_loaded, tx._last_decode, tx.mlx_whisper.transcribe, tx._has_speech)
+    orig = (tx._model_loaded, tx._last_decode, tx.mlx_whisper.transcribe, tx.has_speech)
     try:
         tx._model_loaded = True
         tx.mlx_whisper.transcribe = lambda *a, **k: fired.append(1) or {"text": ""}
-        tx._has_speech = lambda a: False
+        tx.has_speech = lambda a: False
         tx._last_decode = _t.monotonic()
         tx.rewarm_if_idle()
         report("no rewarm when recently used", fired == [])
@@ -579,7 +663,7 @@ def test_segmenter():
         tx.rewarm_if_idle()
         report("rewarm after idle", fired == [1] and _t.monotonic() - tx._last_decode < 1)
     finally:
-        tx._model_loaded, tx._last_decode, tx.mlx_whisper.transcribe, tx._has_speech = orig
+        tx._model_loaded, tx._last_decode, tx.mlx_whisper.transcribe, tx.has_speech = orig
 
 
 # ============================================================

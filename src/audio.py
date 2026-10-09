@@ -214,6 +214,43 @@ def recent_peak(window_s: float) -> float:
     return peak
 
 
+def peak_between(start_native: int, end_native: int) -> float:
+    """Max absolute amplitude over captured native samples [start, end). Used to
+    tell whether anything was said after a speculative transcription."""
+    with _lock:
+        chunks = list(_chunks)
+    peak, pos = 0.0, 0
+    for c in chunks:
+        flat = c.reshape(-1)
+        lo, hi = max(start_native - pos, 0), min(end_native - pos, flat.size)
+        if lo < hi:
+            peak = max(peak, float(np.max(np.abs(flat[lo:hi]))))
+        pos += flat.size
+        if pos >= end_native:
+            break
+    return peak
+
+
+def trailing_quiet_s(end_native: int, peak_floor: float) -> float:
+    """Seconds of audio quieter than peak_floor just before end_native, at block
+    resolution: how long the user paused before releasing the hotkey."""
+    with _lock:
+        chunks = list(_chunks)
+    pos = sum(len(c) for c in chunks)
+    quiet = 0
+    for c in reversed(chunks):
+        flat = c.reshape(-1)
+        start = pos - flat.size
+        pos = start
+        if start >= end_native:
+            continue                       # captured after end_native
+        seg = flat[:end_native - start]
+        if seg.size and float(np.max(np.abs(seg))) >= peak_floor:
+            break
+        quiet += seg.size
+    return quiet / max(1, _native_rate)
+
+
 def extract_16k(start_native: int, end_native: int) -> np.ndarray:
     """Downsample captured native audio in [start_native, end_native) to 16kHz
     mono float32. Snapshots the buffer so concurrent capture is safe; segment

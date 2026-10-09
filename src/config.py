@@ -55,4 +55,15 @@ STREAM_MIN_SEG_S = 8.0         # don't close a segment until this much unsegment
 STREAM_MAX_SEG_S = 24.0        # force-close even mid-speech before Whisper's 30s window (avoids a 2nd window)
 STREAM_SILENCE_PEAK = 0.02     # native peak below this over the trailing window reads as a pause boundary
 STREAM_SILENCE_WIN_S = 0.45    # trailing window that must be quiet to mark a pause
-STREAM_POLL_S = 0.35           # how often the segmenter checks whether a segment should close
+STREAM_POLL_S = 0.1            # how often the segmenter checks for a pause (cheap; release wakes it)
+
+# Speculative tail (see segmenter): at a pause this long, pre-transcribe the pending
+# audio so a release right after it pastes without decoding. Shorter = more hits but
+# more wasted decodes at mid-sentence pauses. False disables it.
+STREAM_SPECULATE = True
+STREAM_SPEC_SILENCE_S = 0.3
+
+# Sound within this long before release means the user was still speaking: wait this
+# long for in-flight input buffers (1024-frame block + device latency) so the last
+# syllable isn't clipped. A quiet release ends the tail exactly at key-up instead.
+RELEASE_GRACE_S = 0.06

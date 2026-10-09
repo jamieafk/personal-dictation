@@ -60,7 +60,7 @@ def _normalize(audio: np.ndarray, precomputed_peak: float = 0.0) -> np.ndarray:
     return audio
 
 
-def _has_speech(audio: np.ndarray) -> bool:
+def has_speech(audio: np.ndarray) -> bool:
     """Check if audio contains speech using Silero VAD. ~30ms on a ~12s clip
     (scales with clip length) — runs on the critical path before inference."""
     global _vad_model
@@ -114,7 +114,7 @@ def rewarm_if_idle():
         return
     t0 = time.monotonic()
     silent = np.zeros(8000, dtype=np.float32)  # 0.5s
-    _has_speech(silent)
+    has_speech(silent)
     mlx_whisper.transcribe(silent, path_or_hf_repo=MODEL_PATH, **_DECODE_PARAMS)
     _mark_decode()
     log.info("Rewarm after %.0fm idle: %.0fms", idle_s / 60, (time.monotonic() - t0) * 1000)
@@ -128,7 +128,7 @@ def transcribe(audio: np.ndarray, precomputed_peak: float = 0.0) -> str:
 
     # VAD on raw audio BEFORE normalization — Silero was trained on real mic levels.
     # Running VAD after gain boost causes amplified noise to trigger false positives.
-    if not _has_speech(audio):
+    if not has_speech(audio):
         log.info("Discarded: VAD found no speech (silent or too quiet)")
         return ""
 

@@ -114,8 +114,10 @@ class DictationApp(rumps.App):
         self._overlay = RecordingOverlay()
         # Streaming: transcribes speech segments during the hold so on release
         # only the final tail remains. Each segment self-normalizes + runs its own
-        # VAD guard via transcribe.transcribe.
-        self._segmenter = StreamingSegmenter(audio, transcribe.transcribe)
+        # VAD guard via transcribe.transcribe. speech_fn enables speculative tails.
+        self._segmenter = StreamingSegmenter(
+            audio, transcribe.transcribe,
+            speech_fn=transcribe.has_speech if config.STREAM_SPECULATE else None)
 
         # Recovery state
         self._last_text = ""        # full text of the last successful dictation
@@ -313,17 +315,21 @@ class DictationApp(rumps.App):
         self._overlay.show()
 
     def _on_release(self):
+        t_release = time.monotonic()
         with self._state_lock:
             if self._state != RECORDING:
                 return
             self._state = PROCESSING
+        # Mark the release point before the stop sound can reach the mic, so the
+        # chime never counts as speech after a speculative tail.
+        release_native = audio.samples_captured()
         self.title = TITLES[PROCESSING]
         sounds.play_stop()
 
         # Min-duration discard runs on the main thread so a clipped quick-tap flashes
         # immediately (no processing pulse), matching the pre-streaming behavior.
         min_samples = int(max(1, audio.native_rate()) * config.MIN_DURATION_S)
-        if audio.samples_captured() < min_samples:
+        if release_native < min_samples:
             self._segmenter.cancel()
             audio.stop_stream()
             self._overlay.flash_discard()
@@ -333,13 +339,12 @@ class DictationApp(rumps.App):
         # Keep the overlay as a "processing" pulse until the paste lands. Most of the
         # audio was already transcribed during the hold, so this window is brief.
         self._overlay.show_processing()
-        saved_clipboard = paste.save_clipboard()
 
-        # Joining the poll thread, finalizing the tail, and pasting all run OFF the
-        # main run loop so the CGEvent tap callback never blocks.
+        # Joining the poll thread, saving the clipboard, finalizing the tail, and
+        # pasting all run OFF the main run loop so the CGEvent tap callback never blocks.
         threading.Thread(
             target=self._finalize_streaming,
-            args=(self._focused_app, saved_clipboard),
+            args=(self._focused_app, release_native, t_release),
             daemon=True,
         ).start()
 
@@ -353,15 +358,20 @@ class DictationApp(rumps.App):
         self._segmenter.cancel()  # discard pending segments + stop the worker
         audio.stop_stream()       # stop the stream, discard the buffer
 
-    def _finalize_streaming(self, app_name: str, saved_clipboard=None):
+    def _finalize_streaming(self, app_name: str, release_native: int, t_release: float):
         """Background: stop segmenting, transcribe the final tail, assemble the full
         text, post-process, and paste. Runs off the main thread. Most segments are
         already transcribed by release, so this mostly waits on the short tail."""
         from PyObjCTools import AppHelper
         try:
-            self._segmenter.stop_polling()          # no more auto-closes (joins poll thread)
-            end_native = audio.samples_captured()   # everything captured up to release
+            self._segmenter.stop_polling()          # no more auto-closes (wakes + joins poll thread)
+            pause_s = audio.trailing_quiet_s(release_native, config.STREAM_SILENCE_PEAK)
+            end_native = release_native
+            if pause_s < config.RELEASE_GRACE_S:    # still speaking at release
+                time.sleep(config.RELEASE_GRACE_S)  # let in-flight input buffers land
+                end_native = audio.samples_captured()
             self._segmenter.close_tail(end_native)  # enqueue the final tail segment
+            saved_clipboard = paste.save_clipboard()  # overlaps the tail decode
             audio.stop_stream()                     # tail already extracted; safe to stop+clear
 
             t0 = time.monotonic()
@@ -372,11 +382,14 @@ class DictationApp(rumps.App):
             vocab = postprocess.load_vocab()
             text = postprocess.clean(text, vocab)
             if text:
+                e2e_ms = (time.monotonic() - t_release) * 1000  # release → Cmd+V posted
                 paste.insert_text(text, saved_clipboard=saved_clipboard)
                 history.append(app_name, text)
                 word_count = len(text.split())
-                log.info("Dictation: %d words in %.0fms from %s (streaming)",
-                         word_count, elapsed_ms, app_name)
+                spec, spec_runs = self._segmenter.spec_stats()
+                log.info("Dictation: %d words in %.0fms from %s (streaming) "
+                         "release_to_paste=%.0fms spec=%s runs=%d pause=%.2fs",
+                         word_count, elapsed_ms, app_name, e2e_ms, spec, spec_runs, pause_s)
                 self._last_text = text
                 self._failed_buf = None
                 self._failed_app = ""
@@ -414,9 +427,9 @@ class DictationApp(rumps.App):
                 f"{str(e)[:150]} — use 'Retry last dictation' in the menu",
             )
         finally:
+            self._segmenter.reset()   # before IDLE: a new press must not race the reset
             self._set_state(IDLE)
             audio.prepare()           # no-op if stream exists; recreates if it died
-            self._segmenter.reset()
 
     def _process(self, buf, app_name: str, saved_clipboard=None, peak: float = 0.0,
                  was_retry: bool = False):
