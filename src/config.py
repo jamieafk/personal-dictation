@@ -41,6 +41,10 @@ VAD_SPEAKING_FLOOR = 0.002     # RMS above this reads as "speaking" for the bars
 # long (see transcribe.rewarm_if_idle). The cold penalty shows up from ~5–30 min.
 REWARM_IDLE_S = 600.0
 
+# GPU memory MLX keeps wired (unpageable). Weights are ~200MB, but each decode runs
+# a fixed 30s window: measured peak ~940MB (2026-10-09), so 1GB covers it all.
+MLX_WIRED_LIMIT_MB = 1024
+
 # How often to re-check for Accessibility permission once the hotkey is disabled.
 HOTKEY_RECHECK_S = 4.0
 # If the tap has delivered no key events this long after it was enabled, the

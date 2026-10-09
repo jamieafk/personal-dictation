@@ -5,6 +5,7 @@ import os
 import time
 import numpy as np
 import torch
+import mlx.core as mx
 import mlx_whisper
 from silero_vad import load_silero_vad, get_speech_timestamps
 
@@ -88,9 +89,21 @@ def speech_stats(audio: np.ndarray):
     return float(np.max(np.abs(audio))), prob
 
 
+def _wire_model_memory():
+    """Keep MLX's GPU buffers (weights + the 30s-window working set) resident so
+    macOS can't page them out while the app idles — the likely cause of the
+    multi-second first dictation after hours idle. Must precede the first decode."""
+    try:
+        mx.set_wired_limit(config.MLX_WIRED_LIMIT_MB * 1024 * 1024)
+        log.info("MLX wired limit: %d MB", config.MLX_WIRED_LIMIT_MB)
+    except Exception as e:  # e.g. above the system wired limit
+        log.warning("Could not wire model memory: %s", e)
+
+
 def warmup():
     """Run a silent sample through the model to JIT-compile MLX kernels."""
     global _model_loaded, _vad_model
+    _wire_model_memory()
     silent = np.zeros(16000, dtype=np.float32)  # 1 second of silence
     mlx_whisper.transcribe(silent, path_or_hf_repo=MODEL_PATH, **_DECODE_PARAMS)
     _model_loaded = True
