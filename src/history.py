@@ -35,7 +35,7 @@ def append(app_name: str, text: str) -> HistoryEntry:
     # Escape pipes in text (unlikely in speech, but defensive)
     safe_text = text.replace("|", "\\|")
     line = f"{now.strftime('%Y-%m-%d %H:%M:%S')} | {app_name} | {safe_text}\n"
-    with open(HISTORY_PATH, "a") as f:
+    with open(HISTORY_PATH, "a", encoding="utf-8") as f:
         f.write(line)
     entry = HistoryEntry(timestamp=now, app_name=app_name, text=text)
     # Increment cached count instead of re-reading file
@@ -50,7 +50,7 @@ def load_all() -> List[HistoryEntry]:
     if not os.path.exists(HISTORY_PATH):
         return []
     entries = []
-    with open(HISTORY_PATH, "r") as f:
+    with open(HISTORY_PATH, "r", encoding="utf-8") as f:
         for line in f:
             line = line.rstrip("\n")
             if not line:
@@ -85,11 +85,11 @@ def lifetime_word_count() -> int:
         # Seed from current history for existing users
         _lifetime_count = total_word_count()
         if _lifetime_count > 0:
-            with open(LIFETIME_PATH, "w") as f:
+            with open(LIFETIME_PATH, "w", encoding="utf-8") as f:
                 f.write(str(_lifetime_count))
         return _lifetime_count
     try:
-        with open(LIFETIME_PATH, "r") as f:
+        with open(LIFETIME_PATH, "r", encoding="utf-8") as f:
             _lifetime_count = int(f.read().strip())
     except (ValueError, OSError):
         _lifetime_count = 0
@@ -102,7 +102,7 @@ def _increment_lifetime_words(count: int):
     current = lifetime_word_count()
     _lifetime_count = current + count
     os.makedirs(HISTORY_DIR, exist_ok=True)
-    with open(LIFETIME_PATH, "w") as f:
+    with open(LIFETIME_PATH, "w", encoding="utf-8") as f:
         f.write(str(_lifetime_count))
 
 
@@ -123,7 +123,7 @@ def delete_all():
     """Delete all history entries."""
     global _cached_word_count
     if os.path.exists(HISTORY_PATH):
-        with open(HISTORY_PATH, "w") as f:
+        with open(HISTORY_PATH, "w", encoding="utf-8") as f:
             pass
     _cached_word_count = 0
 
@@ -131,7 +131,7 @@ def delete_all():
 def _rewrite(entries: List[HistoryEntry]):
     """Rewrite the history file with the given entries."""
     os.makedirs(HISTORY_DIR, exist_ok=True)
-    with open(HISTORY_PATH, "w") as f:
+    with open(HISTORY_PATH, "w", encoding="utf-8") as f:
         for e in entries:
             safe_text = e.text.replace("|", "\\|")
             f.write(f"{e.timestamp.strftime('%Y-%m-%d %H:%M:%S')} | {e.app_name} | {safe_text}\n")

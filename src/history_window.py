@@ -438,7 +438,7 @@ class HistoryWindowController:
         if panel.runModal() == 1:  # OK
             path = str(panel.URL().path())
             entries = history.load_all()
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 for e in entries:
                     ts = e.timestamp.strftime("%Y-%m-%d %H:%M:%S")
                     f.write(f"{ts} | {e.app_name} | {e.text}\n")

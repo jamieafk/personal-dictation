@@ -18,6 +18,7 @@ ALL_TESTS = [
     "test_postprocessing",
     "test_segmenter",
     "test_hotkey",
+    "test_encoding",
 ]
 
 # Run a subset by passing module names, e.g.:

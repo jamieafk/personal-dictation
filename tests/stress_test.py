@@ -549,6 +549,39 @@ def test_hotkey():
 
 
 # ============================================================
+# Test 11: Non-ASCII persistence under an ASCII locale (launchd/py2app)
+# ============================================================
+def test_encoding():
+    print("\n=== Test 11: Non-ASCII Under ASCII Locale ===")
+    project = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    tmp_dir = tempfile.mkdtemp()
+    # The launchd .app once ran with an ASCII preferred encoding, so a default
+    # open() raised UnicodeEncodeError on "ń" after the paste had already landed.
+    script = f"""
+import os, sys
+sys.path.insert(0, {project!r})
+from src import history, postprocess
+history.HISTORY_PATH = os.path.join({tmp_dir!r}, "h.txt")
+history.LIFETIME_PATH = os.path.join({tmp_dir!r}, "lw")
+history.append("App", "Paweł Woźniak — café")
+assert history.load_all()[-1].text == "Paweł Woźniak — café"
+vocab = os.path.join({tmp_dir!r}, "vocab.txt")
+with open(vocab, "w", encoding="utf-8") as f:
+    f.write("Woźniak\\n")
+assert postprocess.load_vocab(vocab) == ["Woźniak"]
+print("OK")
+"""
+    env = {"HOME": os.environ.get("HOME", ""), "LC_ALL": "en_US.US-ASCII"}
+    try:
+        r = subprocess.run([sys.executable, "-c", script], capture_output=True,
+                           text=True, encoding="utf-8", env=env, timeout=60)
+        report("history + vocab round-trip non-ASCII", r.stdout.strip().endswith("OK"),
+               (r.stderr.strip().splitlines() or ["no output"])[-1])
+    finally:
+        shutil.rmtree(tmp_dir)
+
+
+# ============================================================
 # Run all tests
 # ============================================================
 if __name__ == "__main__":
@@ -565,6 +598,7 @@ if __name__ == "__main__":
     test_postprocessing()
     test_segmenter()
     test_hotkey()
+    test_encoding()
 
     print("\n" + "=" * 50)
     print(f"Results: {PASS} passed, {FAIL} failed")
