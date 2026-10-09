@@ -2,6 +2,7 @@
 
 import logging
 import os
+import time
 import numpy as np
 import torch
 import mlx_whisper
@@ -17,6 +18,7 @@ _LOCAL_MODEL = os.path.join(_PROJECT_DIR, "models", "whisper-small.en-mlx-q4")
 MODEL_PATH = _LOCAL_MODEL if os.path.isdir(_LOCAL_MODEL) else "mlx-community/whisper-small.en-mlx-q4"
 _model_loaded = False
 _vad_model = None
+_last_decode = 0.0  # monotonic time of the last decode (warmup, rewarm or real)
 
 # Decode parameters shared by warmup() and transcribe() so the warmed-up code
 # path is identical to the live one.
@@ -77,6 +79,28 @@ def warmup():
     _model_loaded = True
     # Also warm up VAD
     _vad_model = load_silero_vad(onnx=True)
+    _mark_decode()
+
+
+def _mark_decode():
+    global _last_decode
+    _last_decode = time.monotonic()
+
+
+def rewarm_if_idle():
+    """Re-run a tiny silent decode if the model has sat idle. Log data showed the
+    first dictation after a long idle runs up to ~10x slower (p90 3.9s after >2h
+    idle vs 0.9s within 5min). Called on hotkey press, on the segmenter's serial
+    worker, so it overlaps with the user speaking instead of the release wait."""
+    idle_s = time.monotonic() - _last_decode
+    if not _model_loaded or idle_s < config.REWARM_IDLE_S:
+        return
+    t0 = time.monotonic()
+    silent = np.zeros(8000, dtype=np.float32)  # 0.5s
+    _has_speech(silent)
+    mlx_whisper.transcribe(silent, path_or_hf_repo=MODEL_PATH, **_DECODE_PARAMS)
+    _mark_decode()
+    log.info("Rewarm after %.0fm idle: %.0fms", idle_s / 60, (time.monotonic() - t0) * 1000)
 
 
 def transcribe(audio: np.ndarray, precomputed_peak: float = 0.0) -> str:
@@ -94,6 +118,7 @@ def transcribe(audio: np.ndarray, precomputed_peak: float = 0.0) -> str:
     audio = _normalize(audio, precomputed_peak)
 
     result = mlx_whisper.transcribe(audio, path_or_hf_repo=MODEL_PATH, **_DECODE_PARAMS)
+    _mark_decode()
 
     # Local diagnostics: write a line to the local log file when the fallback
     # retry actually fired (a segment decoded at t>0). Stays on this machine —

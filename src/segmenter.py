@@ -59,12 +59,15 @@ class StreamingSegmenter:
 
     # --- lifecycle ---
 
-    def start(self):
-        """Begin segmenting. Call on hotkey press, after recording has started."""
+    def start(self, prime=None):
+        """Begin segmenting. Call on hotkey press, after recording has started.
+        prime: optional callable run first on the worker (serial with segment
+        transcribes), e.g. a model re-warm that overlaps with the user speaking."""
         with self._lock:
             self._reset_state()
             self._running = True
-            self._worker = threading.Thread(target=self._worker_loop, daemon=True)
+            self._worker = threading.Thread(
+                target=self._worker_loop, args=(self._queue, self._results, prime), daemon=True)
             self._worker.start()
             self._poll = threading.Thread(target=self._poll_loop, daemon=True)
             self._poll.start()
@@ -168,11 +171,19 @@ class StreamingSegmenter:
         self._queue.put((idx, seg_audio))
         log.debug("Segment %d closed (%d samples)", idx, len(seg_audio))
 
-    def _worker_loop(self):
+    def _worker_loop(self, q, results, prime):
+        # q/results are this session's objects, bound at start: if cancel() times
+        # out joining a busy worker and resets state, the stale worker must not
+        # consume the next session's queue or write into its results.
+        if prime is not None:
+            try:
+                prime()
+            except Exception:
+                log.exception("Segmenter prime failed")
         while True:
-            item = self._queue.get()
+            item = q.get()
             if item is None:
-                self._queue.task_done()
+                q.task_done()
                 break
             idx, seg_audio = item
             try:
@@ -181,5 +192,5 @@ class StreamingSegmenter:
                 log.exception("Segment %d transcription failed", idx)
                 text = ""
             with self._lock:
-                self._results[idx] = text
-            self._queue.task_done()
+                results[idx] = text
+            q.task_done()

@@ -528,6 +528,51 @@ def test_segmenter():
     segC.start(); _t.sleep(0.1); segC.cancel()
     report("cancel resets state", segC._seg_index == 0 and segC._assemble() == "")
 
+    # --- prime runs on the worker before any segment transcribes ---
+    order = []
+    segP = StreamingSegmenter(FakeAudio(), lambda a: order.append("tx") or "w")
+    segP.start(prime=lambda: (_t.sleep(0.05), order.append("prime")))
+    segP.stop_polling(); segP.close_tail(16000)
+    report("prime runs before first segment", segP.finalize() == "w" and order == ["prime", "tx"],
+           repr(order))
+
+    # --- a worker stuck past cancel's join timeout can't leak into the next session ---
+    import src.segmenter as segmod
+    old_timeout = segmod._POLL_JOIN_TIMEOUT_S
+    segmod._POLL_JOIN_TIMEOUT_S = 0.01
+    segL = StreamingSegmenter(FakeAudio(), lambda a: "stale")
+    try:
+        segL.start(prime=lambda: _t.sleep(0.2))
+        segL.cancel()                      # join times out; worker still priming
+        segL._transcribe = lambda a: "fresh"
+        segL.start()
+        segL.stop_polling(); segL.close_tail(16000)
+        _t.sleep(0.3)                      # stale worker finishes prime, must see only its own queue
+        t0 = _t.monotonic()
+        out = segL.finalize()
+        report("stale worker isolated from next session",
+               out == "fresh" and segL._worker is not None and not segL._worker.is_alive()
+               and _t.monotonic() - t0 < 1.0, repr(out))
+    finally:
+        segmod._POLL_JOIN_TIMEOUT_S = old_timeout
+
+    # --- rewarm only fires after idle ---
+    from src import transcribe as tx
+    fired = []
+    orig = (tx._model_loaded, tx._last_decode, tx.mlx_whisper.transcribe, tx._has_speech)
+    try:
+        tx._model_loaded = True
+        tx.mlx_whisper.transcribe = lambda *a, **k: fired.append(1) or {"text": ""}
+        tx._has_speech = lambda a: False
+        tx._last_decode = _t.monotonic()
+        tx.rewarm_if_idle()
+        report("no rewarm when recently used", fired == [])
+        tx._last_decode = _t.monotonic() - tx.config.REWARM_IDLE_S - 1
+        tx.rewarm_if_idle()
+        report("rewarm after idle", fired == [1] and _t.monotonic() - tx._last_decode < 1)
+    finally:
+        tx._model_loaded, tx._last_decode, tx.mlx_whisper.transcribe, tx._has_speech = orig
+
 
 # ============================================================
 # Test 10: Hotkey tap event counter (stale-grant watchdog signal)

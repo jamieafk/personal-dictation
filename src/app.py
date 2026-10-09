@@ -283,7 +283,9 @@ class DictationApp(rumps.App):
                                "Could not access the microphone. Check your audio device.")
             self._set_state(IDLE)
             return
-        self._segmenter.start()  # begin transcribing speech segments during the hold
+        # Begin transcribing speech segments during the hold; re-warm a cold model
+        # first so it overlaps with speaking instead of the release wait.
+        self._segmenter.start(prime=transcribe.rewarm_if_idle)
         # Capture focused app + feedback after recording is already running
         ws = NSWorkspace.sharedWorkspace()
         active = ws.frontmostApplication()

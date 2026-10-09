@@ -37,6 +37,10 @@ VOCAB_THRESHOLD = 0.18         # fuzzy vocab match distance (lower = stricter)
 # Overlay animation.
 VAD_SPEAKING_FLOOR = 0.002     # RMS above this reads as "speaking" for the bars
 
+# Re-run a tiny warm-up decode on hotkey press when the model has been idle this
+# long (see transcribe.rewarm_if_idle). The cold penalty shows up from ~5–30 min.
+REWARM_IDLE_S = 600.0
+
 # How often to re-check for Accessibility permission once the hotkey is disabled.
 HOTKEY_RECHECK_S = 4.0
 # If the tap has delivered no key events this long after it was enabled, the
