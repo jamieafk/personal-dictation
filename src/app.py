@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import rumps
+import Quartz
 
 from src import config
 
@@ -54,7 +55,7 @@ if not _DEBUG:
 from AppKit import NSWorkspace
 from AVFoundation import AVCaptureDevice, AVMediaTypeAudio
 from Foundation import NSURL
-from src import audio, hotkey, paste, transcribe, sounds, history, postprocess
+from src import audio, hotkey, paste, transcribe, sounds, history, postprocess, settings
 from src.overlay import RecordingOverlay
 from src.segmenter import StreamingSegmenter
 
@@ -79,12 +80,16 @@ WARNING = "⚠️"  # warning sign
 
 # Stable menu keys (used for placement / removal).
 LAST_TEXT_PLACEHOLDER = "No transcriptions yet"
-PERM_ITEM_TITLE = "⚠ Hotkey disabled — grant Accessibility"
 
-# System Settings deep link for the Accessibility pane.
-_ACCESSIBILITY_SETTINGS_URL = (
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-)
+# Problems that silently break dictation. Each shows a menu item that opens the
+# right System Settings pane, and any of them swaps the ready mic for ⚠. Stale
+# grants after a py2app rebuild are the usual cause (see ./rebuild.sh).
+_PRIVACY_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_"
+PROBLEMS = {
+    "hotkey": ("⚠ Hotkey disabled — grant Accessibility", "Accessibility"),
+    "listen": ("⚠ Hotkey not receiving keys — re-grant Input Monitoring", "ListenEvent"),
+    "paste": ("⚠ Paste blocked — re-grant Accessibility", "Accessibility"),
+}
 
 
 def _logged(method):
@@ -117,10 +122,9 @@ class DictationApp(rumps.App):
         self._failed_buf = None     # raw audio of the last failed dictation (for retry)
         self._failed_app = ""
 
-        # Hotkey / permission state
-        self._hotkey_ok = True
-        self._perm_item = None      # menu item shown only when the hotkey is disabled
-        self._recheck_timer = None  # polls for Accessibility grant to self-heal
+        # Permission problems (keys of PROBLEMS) -> their menu items
+        self._problems = {}
+        self._recheck_timer = None  # polls while any problem is shown, to self-heal
         self._tap_watch_timer = None  # warns if the tap never sees a key event
         self._tap_silent_warned = False
         self._tap_watch_ticks = 0
@@ -138,6 +142,7 @@ class DictationApp(rumps.App):
             self._retry_item,
             None,
             rumps.MenuItem("Transcription History...", callback=self._show_history),
+            rumps.MenuItem("Settings...", callback=self._show_settings, key=","),
             None,
             rumps.MenuItem("Quit", callback=self._quit),
         ]
@@ -182,9 +187,9 @@ class DictationApp(rumps.App):
         self.title = self._title_for(state)
 
     def _title_for(self, state: str) -> str:
-        # When the hotkey can't run, never show the "ready" mic — surface the warning
-        # so the menubar doesn't claim everything's fine while hold-to-talk is dead.
-        if state == IDLE and not self._hotkey_ok:
+        # When dictation can't work, never show the "ready" mic — surface the warning
+        # so the menubar doesn't claim everything's fine while it's silently broken.
+        if state == IDLE and self._problems:
             return WARNING
         return TITLES[state]
 
@@ -197,6 +202,20 @@ class DictationApp(rumps.App):
     def _show_history(self, _):
         from src.history_window import HistoryWindowController
         HistoryWindowController.show()
+
+    @_logged
+    def _show_settings(self, _):
+        from src.settings_window import SettingsWindowController
+        SettingsWindowController.show(self._change_hotkey)
+
+    def _change_hotkey(self, keycode: int):
+        """Main thread (Settings recorder). Returns an error message or None."""
+        err = hotkey.set_hotkey(keycode)
+        if err is None:
+            self._hotkey_keycode = keycode
+            settings.save(hotkey_keycode=keycode)
+            self._clear_problem("hotkey")
+        return err
 
     # --- Last-transcription re-paste + failure recovery ---
 
@@ -460,45 +479,65 @@ class DictationApp(rumps.App):
             "Check Accessibility permissions and restart the app.",
         )
 
-    # --- Hotkey / Accessibility status ---
+    # --- Permission problems ---
 
-    def _show_hotkey_disabled(self):
-        """Main thread: reflect a dead hotkey in the menubar and start polling so a
-        later Accessibility grant self-heals the app without a restart."""
-        self.title = WARNING
-        if self._perm_item is None:
-            self._perm_item = rumps.MenuItem(
-                PERM_ITEM_TITLE, callback=self._open_accessibility_settings)
-            self.menu.insert_before(LAST_TEXT_PLACEHOLDER, self._perm_item)
+    def _setup_hotkey(self) -> bool:
+        return hotkey.setup_hotkey(self._on_press, self._on_release, self._on_cancel,
+                                   self._on_tap_lost, keycode=self._hotkey_keycode)
+
+    def _show_problem(self, key: str):
+        """Main thread: show a ⚠ menu item for a permission problem and poll so a
+        later grant self-heals the app without a restart."""
+        title, pane = PROBLEMS[key]
+        if key not in self._problems:
+            item = rumps.MenuItem(title, callback=lambda _, p=pane: self._open_privacy(p))
+            self.menu.insert_before(LAST_TEXT_PLACEHOLDER, item)
+            self._problems[key] = item
+            log.warning("Problem shown: %s", title)
+        self.title = self._title_for(self._state)
         if self._recheck_timer is None:
-            self._recheck_timer = rumps.Timer(self._recheck_hotkey, config.HOTKEY_RECHECK_S)
+            self._recheck_timer = rumps.Timer(self._recheck_problems, config.HOTKEY_RECHECK_S)
             self._recheck_timer.start()
 
-    @_logged
-    def _open_accessibility_settings(self, _):
-        url = NSURL.URLWithString_(_ACCESSIBILITY_SETTINGS_URL)
-        NSWorkspace.sharedWorkspace().openURL_(url)
+    def _clear_problem(self, key: str):
+        item = self._problems.pop(key, None)
+        if item is None:
+            return
+        log.info("Problem resolved: %s", PROBLEMS[key][0])
+        try:
+            del self.menu[item.title]
+        except KeyError:
+            pass
+        self.title = self._title_for(self._state)
+        if not self._problems and self._recheck_timer is not None:
+            self._recheck_timer.stop()
+            self._recheck_timer = None
 
     @_logged
-    def _recheck_hotkey(self, _):
-        """Periodic: once Accessibility is granted, enable the hotkey and restore the
-        ready icon + menu without requiring a restart."""
-        if self._hotkey_ok:
-            return
-        if hotkey.setup_hotkey(self._on_press, self._on_release, self._on_cancel, self._on_tap_lost):
-            self._hotkey_ok = True
-            log.info("Accessibility granted — hotkey enabled")
+    def _open_privacy(self, pane: str):
+        NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(_PRIVACY_URL + pane))
+
+    @_logged
+    def _recheck_problems(self, _):
+        """Periodic while any problem is shown: clear the ones that got fixed."""
+        if "hotkey" in self._problems and self._setup_hotkey():
+            self._clear_problem("hotkey")
             self._start_tap_watch()
-            self.title = self._title_for(self._state)
-            if self._perm_item is not None:
-                try:
-                    del self.menu[PERM_ITEM_TITLE]
-                except KeyError:
-                    pass
-                self._perm_item = None
-            if self._recheck_timer is not None:
-                self._recheck_timer.stop()
-                self._recheck_timer = None
+        if "listen" in self._problems and (Quartz.CGPreflightListenEventAccess()
+                                           or hotkey.events_seen() > 0):
+            self._clear_problem("listen")
+        if "paste" in self._problems and Quartz.CGPreflightPostEventAccess():
+            self._clear_problem("paste")
+
+    def _check_grants(self):
+        """Startup: catch stale/missing grants up front instead of a dead hotkey or
+        a transcription that never pastes (blind Cmd+V fails silently)."""
+        if not Quartz.CGPreflightListenEventAccess():
+            Quartz.CGRequestListenEventAccess()
+            self._show_problem("listen")
+        if not Quartz.CGPreflightPostEventAccess():
+            Quartz.CGRequestPostEventAccess()
+            self._show_problem("paste")
 
     def _start_tap_watch(self):
         """Main thread: a tap can be created yet receive nothing when the Input
@@ -517,15 +556,18 @@ class DictationApp(rumps.App):
         if hotkey.events_seen() > 0:
             if self._tap_silent_warned:
                 log.info("Hotkey tap now receiving key events")
+            self._clear_problem("listen")
             self._tap_watch_timer.stop()
             self._tap_watch_timer = None
         elif not self._tap_silent_warned:
             self._tap_silent_warned = True
             log.warning(
                 "Hotkey tap has received no key events for %.0fs — Input Monitoring grant is "
-                "likely stale (e.g. after a rebuild). Fix: tccutil reset ListenEvent/PostEvent/"
-                "Accessibility com.personal.dictation, relaunch, re-grant.",
+                "likely stale (e.g. after a rebuild). Fix: ./rebuild.sh, or re-grant it.",
                 config.HOTKEY_SILENT_WARN_S)
+            # No notification: right after login nobody may have typed yet. The ⚠
+            # clears itself on the first key event.
+            self._show_problem("listen")
 
     @_logged
     def _quit(self, _):
@@ -549,13 +591,17 @@ class DictationApp(rumps.App):
                 AVMediaTypeAudio, lambda granted: None
             )
 
+        self._hotkey_keycode = settings.load()["hotkey_keycode"]
+        if hotkey.validate_key(self._hotkey_keycode):
+            log.warning("Stored hotkey %r invalid — using default", self._hotkey_keycode)
+            self._hotkey_keycode = hotkey.DEFAULT_KEYCODE
+        log.info("Hotkey: %s", hotkey.key_label(self._hotkey_keycode))
+
         # Set up the global hotkey — if it fails, still run (show menubar) but make
         # the broken state visible and recoverable instead of silently showing "ready".
-        if hotkey.setup_hotkey(self._on_press, self._on_release, self._on_cancel, self._on_tap_lost):
-            self._hotkey_ok = True
+        if self._setup_hotkey():
             self._start_tap_watch()
         else:
-            self._hotkey_ok = False
             log.warning("Accessibility permission not granted — hotkey disabled")
             rumps.notification(
                 "Personal Dictation",
@@ -563,7 +609,8 @@ class DictationApp(rumps.App):
                 "Open System Settings > Privacy & Security > Accessibility and enable "
                 "Personal Dictation. It will start working automatically — no restart needed.",
             )
-            self._show_hotkey_disabled()
+            self._show_problem("hotkey")
+        self._check_grants()
         super().run(**kwargs)
 
 

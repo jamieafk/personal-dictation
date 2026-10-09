@@ -600,6 +600,96 @@ def test_hotkey():
     hotkey._event_callback(None, Quartz.kCGEventTapDisabledByTimeout, ev, None)
     report("tap-timeout is not a key event", hotkey.events_seen() == 2, f"got {hotkey.events_seen()}")
 
+    # --- configurable hotkey: synthetic events through the tap callback ---
+    from src import config
+    calls = []
+    hotkey._on_press = lambda: calls.append("press")
+    hotkey._on_release = lambda: calls.append("release")
+    hotkey._on_cancel = lambda: calls.append("cancel")
+    config.HOLD_CANCEL_S = 0.0
+
+    def mod(keycode, flags):
+        e = Quartz.CGEventCreateKeyboardEvent(None, keycode, True)
+        Quartz.CGEventSetType(e, Quartz.kCGEventFlagsChanged)
+        Quartz.CGEventSetFlags(e, flags)
+        return hotkey._event_callback(None, Quartz.kCGEventFlagsChanged, e, None)
+
+    def key(keycode, down, repeat=False):
+        e = Quartz.CGEventCreateKeyboardEvent(None, keycode, down)
+        if repeat:
+            Quartz.CGEventSetIntegerValueField(e, Quartz.kCGKeyboardEventAutorepeat, 1)
+        t = Quartz.kCGEventKeyDown if down else Quartz.kCGEventKeyUp
+        return hotkey._event_callback(None, t, e, None)
+
+    ALT = Quartz.kCGEventFlagMaskAlternate
+    hotkey._keycode = 61
+    mod(61, ALT); mod(61, 0)
+    report("Right Option hold -> press, release", calls == ["press", "release"], repr(calls))
+
+    calls.clear()
+    mod(58, ALT); mod(61, ALT); mod(61, ALT)  # left held throughout; right down then up
+    report("release detected while twin Left Option keeps mask set",
+           calls == ["press", "release"], repr(calls))
+    mod(58, 0)
+
+    calls.clear()
+    hotkey._keycode = 54  # Right Command
+    mod(61, ALT); mod(61, 0)
+    report("non-selected modifier ignored", calls == [], repr(calls))
+    mod(54, Quartz.kCGEventFlagMaskCommand); key(53, True)
+    report("Escape cancels while held", calls == ["press", "cancel"], repr(calls))
+    mod(54, 0)
+    report("release after Escape-cancel is ignored", calls == ["press", "cancel"], repr(calls))
+
+    calls.clear()
+    hotkey._keycode = 105  # F13: active tap, swallowed
+    down = key(105, True); rep = key(105, True, repeat=True); up = key(105, False)
+    report("F13 hold -> press, release; autorepeat ignored",
+           calls == ["press", "release"], repr(calls))
+    report("F13 events swallowed", down is None and rep is None and up is None)
+    report("other keys pass through", key(0, True) is not None)
+
+    report("validate: letter rejected", hotkey.validate_key(0) is not None)
+    report("validate: Escape rejected", hotkey.validate_key(53) is not None)
+    report("validate: Caps Lock rejected", hotkey.validate_key(57) is not None)
+    report("validate: Fn, F13, Right Command ok",
+           all(hotkey.validate_key(k) is None for k in (63, 105, 54)))
+    report("labels", hotkey.key_label(61) == "Right Option" and hotkey.key_label(105) == "F13")
+
+    # --- key recorder ---
+    calls.clear()
+    got = []
+    hotkey._keycode = 61
+    hotkey.begin_capture(got.append)
+    mod(61, ALT)
+    report("capture: modifier not captured on press", got == [], repr(got))
+    mod(61, 0)
+    report("capture: lone modifier captured on release", got == [61], repr(got))
+    report("capture: no dictation while recording", calls == [], repr(calls))
+    got.clear()
+    FN = Quartz.kCGEventFlagMaskSecondaryFn
+    mod(63, FN); key(96, True); mod(63, 0)
+    report("capture: fn+F5 records F5, not Fn", got == [96], repr(got))
+    hotkey.end_capture()
+    mod(61, ALT); mod(61, 0)
+    report("dictation resumes after capture", calls == ["press", "release"], repr(calls))
+
+    # --- settings persistence ---
+    from src import settings
+    tmp_dir = tempfile.mkdtemp()
+    orig_path = settings.SETTINGS_PATH
+    settings.SETTINGS_PATH = os.path.join(tmp_dir, "settings.json")
+    try:
+        report("settings default", settings.load()["hotkey_keycode"] == 61)
+        settings.save(hotkey_keycode=105)
+        report("settings round-trip", settings.load()["hotkey_keycode"] == 105)
+        with open(settings.SETTINGS_PATH, "w") as f:
+            f.write("{not json")
+        report("corrupt settings -> defaults", settings.load()["hotkey_keycode"] == 61)
+    finally:
+        settings.SETTINGS_PATH = orig_path
+        shutil.rmtree(tmp_dir)
+
 
 # ============================================================
 # Test 11: Non-ASCII persistence under an ASCII locale (launchd/py2app)
