@@ -263,6 +263,10 @@ class StreamingSegmenter:
                 continue
             try:
                 text = self._reuse_spec(spec, start, end, seg_audio)
+            except Exception:
+                log.exception("Speculation check failed; decoding segment %d normally", idx)
+                text = None
+            try:
                 if text is not None:
                     with self._lock:
                         spec["hit_idx"].add(idx)

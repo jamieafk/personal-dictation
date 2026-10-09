@@ -614,6 +614,10 @@ def test_segmenter():
     out = spec_run(np.concatenate([talk, talk, hush, hush]), 24000, 32000, speech=lambda a: True)
     report("VAD speech after speculation vetoes reuse (quiet by peak)",
            out == ("spec", "t32000", [24000, 32000], ("miss", 1)), repr(out))
+    def boom(a): raise RuntimeError("vad down")
+    out = spec_run(np.concatenate([talk, talk, hush, hush]), 24000, 32000, speech=boom)
+    report("failing speech check decodes instead of dropping the segment",
+           out == ("spec", "t32000", [24000, 32000], ("miss", 1)), repr(out))
     out = spec_run(np.concatenate([talk, talk, hush, hush]), 16000, 32000)
     report("no speculation while still speaking", out[0] is None and out[3] == ("none", 0), repr(out))
 
