@@ -1,5 +1,18 @@
 # Features
 
+- **Choose your hotkey** (2026-10-09) — Menubar → Settings… (⌘,): click the key button and press the key you want to hold to dictate.
+  - Allows modifiers (either Option/Command/Control/Shift, Fn) and non-typing keys (F1–F20, arrows, Home/End). Keys that type text, Escape and Caps Lock are rejected with an inline reason.
+  - Function keys are blocked from reaching the focused app so they only trigger dictation. Applies instantly, survives restarts.
+  - Why: Right Option clashes with some keyboard layouts and apps; one fixed key doesn't fit everyone.
+
+- **Permission problems show in the menubar** (2026-10-09) — If macOS permissions are missing or went stale, the menubar mic turns into ⚠ with a menu item naming the fix ("Hotkey not receiving keys", "Paste blocked") that opens the right System Settings pane. It clears itself once granted.
+  - Why: After a rebuild the hotkey silently died, or dictations transcribed but never pasted, while the menubar still said "ready".
+
+- **No slow first dictation after a break** (2026-10-09) — When the app has sat idle 10+ minutes, pressing the hotkey quietly re-warms the speech model while you talk.
+  - Why: The first dictation after a long idle took up to ~4–6s to paste (p90 3.9s after 2h+ idle vs 0.9s normally).
+
+- **Accented and non-English characters no longer break history** (2026-10-09) — A transcript containing a character like "ń" or "é" used to show a false "Transcription failed" error and skip history; it now saves normally.
+
 - **Instant long dictations (transcribe-while-you-talk)** (2026-06-16) — Long dictations land almost as fast as short ones. While you hold the key, the app quietly transcribes each chunk of speech at natural pauses, so on release only the last few words remain.
   - Measured on a 58-second dictation: time from release to pasted text dropped from 1.6s to 0.33s (5× faster), with word-for-word identical accuracy.
   - Short dictations (under ~8s) are unchanged — they were already instant.

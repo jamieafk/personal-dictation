@@ -1,6 +1,6 @@
 # Personal Dictation
 
-Local-only macOS dictation. Hold Right Option, speak, release; text pastes into the focused app. Python + rumps + mlx-whisper (`small.en` INT4), py2app bundle in `dist/`, launchd auto-launch.
+Local-only macOS dictation. Hold Right Option (configurable in Settings), speak, release; text pastes into the focused app. Python + rumps + mlx-whisper (`small.en` INT4), py2app bundle in `dist/`, launchd auto-launch.
 
 ## How to Run
 
@@ -12,17 +12,19 @@ DICTATION_DEBUG=1 python -m src
 ```
   `DICTATION_DEBUG=1` skips the single-instance fcntl lock and mirrors logs to the console. Without it, `python -m src` exits silently while the launchd copy holds the lock (logs only go to `~/.config/dictation/dictation.log`). launchd process has no TTY and env unset, so unaffected.
 - **Tests:** `python tests/run_tests.py test_postprocessing` (no args = full suite; tests live in `tests/stress_test.py`).
-- **Rebuild .app after dependency changes:** `source .venv/bin/activate && python setup.py py2app -A`
+- **Rebuild .app after dependency changes or a folder move:** `./rebuild.sh` (py2app -A + resets the TCC grants the rebuild invalidates + relaunches). Then re-grant Accessibility + Input Monitoring.
 - **Auto-launch:** `./install.sh` / `./uninstall.sh`
 
 ## Permissions
 
-Grant **Input Monitoring** (hotkey CGEvent tap), **Accessibility** (CGEvent Cmd+V paste) and **Microphone** to `Personal Dictation.app`. Debugging from Terminal: grant them to Terminal instead. After any rebuild these grants go stale; see Common Mistakes.
+Grant **Input Monitoring** (hotkey CGEvent tap), **Accessibility** (CGEvent Cmd+V paste; also the active tap a non-modifier hotkey needs) and **Microphone** to `Personal Dictation.app`. Debugging from Terminal: grant them to Terminal instead. After any rebuild these grants go stale; see Common Mistakes.
 
 ## Architecture
 
 `src/` modules, one responsibility each. Non-obvious ones:
-- `app.py` — rumps menubar app, state machine, orchestrator
+- `app.py` — rumps menubar app, state machine, orchestrator; `PROBLEMS` = ⚠ menu items for missing/stale grants (startup preflight + tap watchdog), self-clearing
+- `hotkey.py` — configurable hold key. Modifiers: `flagsChanged` on a listen-only tap (Input Monitoring). F-keys/arrows: keyDown/keyUp swallowed on an active tap (Accessibility). Capture mode feeds the Settings recorder
+- `settings.py` / `settings_window.py` — `settings.json` + the hotkey recorder window
 - `audio.py` — sounddevice capture at native rate, downsample to 16kHz; streaming accessors `samples_captured`/`recent_peak`/`extract_16k`/`stop_stream`
 - `segmenter.py` — streaming: closes speech segments at pauses during the hold, transcribes in background (poll thread + serial worker)
 - `postprocess.py` — fuzzy vocab, filler removal, stutter collapse
@@ -42,9 +44,7 @@ Grant **Input Monitoring** (hotkey CGEvent tap), **Accessibility** (CGEvent Cmd+
 - **All AppKit ops from background threads go through `AppHelper.callAfter()`** — NSPanel, NSTimer, AND `self.title` (rumps → `NSStatusItem.setTitle_`). Direct calls from the processing thread crash. `_set_state` dispatches via `_apply_title`.
 - **py2app alias mode needs rebuild after new dependencies** — symlinks source, not new packages.
 - **py2app alias mode needs rebuild after moving the folder**: `__boot__.py` and `Info.plist` bake in the absolute source path, so the old bundle segfaults on launch (2026-09-24). Rebuild, then reset privacy grants (next entry).
-- **Any rebuild invalidates privacy grants** — the ad-hoc signature's cdhash changes, but System Settings still shows the toggles ON. Symptoms: hotkey dead (Input Monitoring; the tap watchdog logs `Hotkey tap has received no key events` after `HOTKEY_SILENT_WARN_S`), then transcribes but never pastes (PostEvent, shown under Accessibility). Toggling isn't enough; reset all three, relaunch, re-grant Accessibility + Input Monitoring:
-  `for s in ListenEvent PostEvent Accessibility; do tccutil reset $s com.personal.dictation; done`
-  Confirm with `log show --last 5m --predicate 'subsystem == "com.apple.TCC" AND eventMessage CONTAINS "Failed to match"'`.
+- **Any rebuild invalidates privacy grants** — the ad-hoc signature's cdhash changes, but System Settings still shows the toggles ON. Symptoms: menubar ⚠ with "Hotkey not receiving keys" / "Paste blocked" items. Toggling isn't enough; `./rebuild.sh` resets all three (ListenEvent, PostEvent, Accessibility) and relaunches; re-grant Accessibility + Input Monitoring. Confirm with `log show --last 5m --predicate 'subsystem == "com.apple.TCC" AND eventMessage CONTAINS "Failed to match"'`.
 - **PyObjC selector naming:** underscores map to multi-arg selectors; use camelCase for single-arg methods (`updateLevel_`, not `update_level_`).
 - **Python floats through ObjC dispatch become NSNumber** — keep numeric math in pure Python, not ObjC-bridged methods.
 - **NSPasteboard ops must handle None items/types.**
@@ -52,8 +52,10 @@ Grant **Input Monitoring** (hotkey CGEvent tap), **Accessibility** (CGEvent Cmd+
 - **rumps swallows exceptions in menu callbacks silently** — wrap handlers with the `_logged` decorator in `app.py`.
 - **Track and invalidate every overlay NSTimer on each state change** — repeating animation timer + one-shot discard auto-hide. `_cancel_discard` is called in `show`/`show_processing`/`hide`/`flash_discard`; a stale discard timer otherwise hides the pill mid-recording.
 - **Clipboard insertion is serialized** — `paste.insert_text` holds a module-level lock around save→set→paste→restore; concurrent inserts (re-paste click mid-paste) clobber the saved clipboard.
-- **Log handler must be `encoding="utf-8"`** — launchd has no UTF-8 locale; default `RotatingFileHandler` silently DROPS any line with non-ASCII (encode raises in `emit`, logging swallows it). Only reproduces in .app/launchd, never in a terminal run. Verify deploys against `~/.config/dictation/dictation.log`.
+- **Every text `open()` and the log handler need `encoding="utf-8"`** — launchd can run with an ASCII locale; a default `open()` raised on "ń" in `history.append` after the paste had landed (false error + lost entry). For the log handler: default `RotatingFileHandler` silently DROPS any line with non-ASCII (encode raises in `emit`, logging swallows it). Only reproduces in .app/launchd, never in a terminal run. Verify deploys against `~/.config/dictation/dictation.log`.
 - **Worktree `.venv`/`models` symlinks must stay untracked** — `.gitignore` uses slash-less `.venv`/`models` because `.venv/` matches a directory, not a symlink; `git add -A` staged the symlinks once and merging them replaced the real dirs with broken links (forced venv+model rebuild). In a worktree, add explicit paths, never `git add -A`.
+- **Never recreate the event tap inside its own callback** — the Settings recorder receives keys from the tap, so applying a new hotkey is deferred with `AppHelper.callAfter`.
+- **`test_app_lifecycle` pkills the installed app** — launchd relaunches it after the 30s throttle (on the current source, alias mode).
 - **Streaming release must not join threads on the main thread** — `_on_release` is the tap callback (<1ms). `segmenter.stop_polling()` can block one poll interval, so release only does the min-duration check and spawns `_finalize_streaming` (stop_polling + close_tail + finalize + paste) on a daemon thread.
 
 ## Decisions
@@ -75,6 +77,8 @@ Grant **Input Monitoring** (hotkey CGEvent tap), **Accessibility** (CGEvent Cmd+
 - **Last-transcription menubar item = paste-failure recovery** — paste is a blind Cmd+V with no success check; the item re-pastes `_last_text`. Failed transcriptions keep audio for "Retry last dictation".
 - **Configurable model size is a non-goal** — SPEC.md: fixed model, no adaptive selection. Owner confirmed 2026-06-16: no model picker.
 - **Streaming transcription** (`segmenter.py`) — closes segments at pauses after `STREAM_MIN_SEG_S`=8s of unsegmented audio + quiet trailing window, or `STREAM_MAX_SEG_S`=24s hard cap (before Whisper's 30s window); one serial worker (one GPU). Release latency stops scaling with length (58s clip: 1623ms→327ms, WER delta 0.000). <8s dictations never segment = prior batch behavior. Each segment self-normalizes + runs VAD; `condition_on_previous_text=False` prevents cross-segment repetition. Retry reconstructs audio via `segmenter.full_audio()`.
+- **Re-warm on press after `REWARM_IDLE_S` idle** — release p90 was 3.9s after >2h idle vs 0.9s within 5min. `transcribe.rewarm_if_idle` runs as the segmenter's `prime` (serial worker, overlaps with speech). Verify with `Rewarm after` log lines vs release latency.
+- **Hotkey recorder allows modifiers + non-typing keys only** — letters/digits/punctuation would be swallowed system-wide; Escape is cancel; Caps Lock toggles. Modifiers capture on release (so fn+F5 records F5). Non-modifier keys need an active tap, which stalls all typing if the main thread blocks — another reason the tap callback stays <1ms.
 - **Keep `small.en-q4`; no faster model wins on M3** (evaluated 2026-06-16) — distil-medium.en slower and less accurate (full medium encoder dominates short clips); base.en-q4 2.5x faster but ~5x word errors; Parakeet tdt-0.6b-v2 same accuracy, ~20% faster short clips but equal on 58s, plus new dependency. Decoder-pruning speedups are a large-model/server-GPU property. Long-dictation latency win came from streaming, not a model swap.
 
 Shipped features: `FEATURES.md`. Session history: `logs/`.

@@ -40,7 +40,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# 3. Build the macOS .app bundle
+# 3. Build the macOS .app bundle (later rebuilds: ./rebuild.sh, which also resets stale permissions)
 python setup.py py2app -A
 
 # 4. Install auto-launch (starts on login, restarts on crash)
@@ -62,6 +62,7 @@ macOS will prompt for two permissions the first time. Grant both to **Personal D
 
 - **Dictate:** hold **Right Option**, speak, release. Text is pasted at your cursor.
 - **Cancel:** press **Escape** while holding (or release within ~300ms).
+- **Change the hotkey:** menubar → **Settings…** (⌘,), click the key button, press the key you want to hold. Modifiers (Option, Command, Control, Shift, Fn) and non-typing keys (F1–F20, arrows, Home/End) are allowed.
 - **History, re-paste, retry, quit:** all in the menubar icon's dropdown.
 
 ### Custom vocabulary
@@ -83,7 +84,8 @@ A Python menubar app (rumps) with one module per responsibility under `src/`:
 | Module | Responsibility |
 |--------|---------------|
 | `app.py` | Menubar app, state machine, orchestrator |
-| `hotkey.py` | CGEvent tap for Right Option hold-to-talk |
+| `hotkey.py` | CGEvent tap for the configurable hold-to-talk key |
+| `settings.py` / `settings_window.py` | Persisted settings + hotkey recorder window |
 | `audio.py` | Microphone capture and downsampling to 16kHz |
 | `transcribe.py` | mlx-whisper inference and model lifecycle |
 | `segmenter.py` | Streaming: transcribe speech chunks during the hold |
