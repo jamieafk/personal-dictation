@@ -70,6 +70,10 @@ STREAM_SPEC_SILENCE_S = 0.3
 # floor × this. Measured (Gaussian floor): noise alone 1.04–1.09; TTS words quieter
 # than the noise PEAK 1.16–1.76; normal speech 2–7. Raise only with log evidence.
 STREAM_SPEC_FLOOR_RATIO = 1.15
+# ...for at least this many consecutive frames. A lone loud frame is a click/flicker
+# (first real energy miss: frames=1); steady noise never makes a run of 2, words at
+# the noise floor's peak level always do.
+STREAM_SPEC_MIN_RUN = 2
 
 # Sound within this long before release means the user was still speaking: wait this
 # long for in-flight input buffers (1024-frame block + device latency) so the last

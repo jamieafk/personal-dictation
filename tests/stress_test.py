@@ -623,6 +623,14 @@ def test_segmenter():
     out = spec_run(np.concatenate([talk, talk, room(16000)]), 24000, 32000)
     report("room noise after speculation still reuses it",
            out == ("spec", "t24000", [24000], ("hit", 1)), repr(out))
+    click = room(8000); click[1024:1536] *= 4              # one loud 32ms frame
+    out = spec_run(np.concatenate([talk, talk, room(8000), click]), 24000, 32000)
+    report("a lone loud frame (click) doesn't veto reuse",
+           out == ("spec", "t24000", [24000], ("hit", 1)), repr(out))
+    burst = room(8000); burst[1024:2048] *= 4              # two consecutive loud frames
+    out = spec_run(np.concatenate([talk, talk, room(8000), burst]), 24000, 32000)
+    report("two consecutive loud frames veto reuse",
+           out[:3] == ("spec", "t32000", [24000, 32000]) and "run=2" in out[3][0], repr(out))
     soft = (0.05 * np.sin(np.arange(4000) * 2 * np.pi * 220 / 16000)).astype(np.float32)
     buf = np.concatenate([talk, talk, room(8000), room(2000), soft + room(4000), room(2000)])
     out = spec_run(buf, 24000, 32000)

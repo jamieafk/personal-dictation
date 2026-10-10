@@ -363,6 +363,7 @@ class DictationApp(rumps.App):
         text, post-process, and paste. Runs off the main thread. Most segments are
         already transcribed by release, so this mostly waits on the short tail."""
         from PyObjCTools import AppHelper
+        stopper = None
         try:
             self._segmenter.stop_polling()          # no more auto-closes (wakes + joins poll thread)
             pause_s = audio.trailing_quiet_s(release_native, config.STREAM_SILENCE_PEAK)
@@ -371,8 +372,11 @@ class DictationApp(rumps.App):
                 time.sleep(config.RELEASE_GRACE_S)  # let in-flight input buffers land
                 end_native = audio.samples_captured()
             self._segmenter.close_tail(end_native)  # enqueue the final tail segment
+            # Stopping PortAudio blocks ~110ms. The tail is already extracted, so stop
+            # beside the decode + paste instead of in front of them.
+            stopper = threading.Thread(target=audio.stop_stream, daemon=True)
+            stopper.start()
             saved_clipboard = paste.save_clipboard()  # overlaps the tail decode
-            audio.stop_stream()                     # tail already extracted; safe to stop+clear
 
             t0 = time.monotonic()
             text = self._segmenter.finalize()       # waits for all queued segments to transcribe
@@ -427,6 +431,10 @@ class DictationApp(rumps.App):
                 f"{str(e)[:150]} — use 'Retry last dictation' in the menu",
             )
         finally:
+            if stopper is not None:
+                stopper.join()        # mic fully stopped before a new press can restart it
+            else:
+                audio.stop_stream()   # failed before the async stop: never leave the mic on
             self._segmenter.reset()   # before IDLE: a new press must not race the reset
             self._set_state(IDLE)
             audio.prepare()           # no-op if stream exists; recreates if it died

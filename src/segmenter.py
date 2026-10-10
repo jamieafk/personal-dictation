@@ -55,14 +55,12 @@ def _frame_rms(audio):
     return np.asarray(rms, dtype=np.float64)
 
 
-def _energy_why(ratios, loud):
-    """Miss reason for an energy veto: max ratio, frames over the threshold, and
-    the longest consecutive run — words sustain 4+ frames, clicks/flicker 1–2."""
+def _longest_run(mask):
     run = best = 0
-    for x in loud:
+    for x in mask:
         run = run + 1 if x else 0
         best = max(best, run)
-    return f"energy={float(ratios.max()):.2f},frames={int(loud.sum())},run={best}"
+    return best
 
 
 class StreamingSegmenter:
@@ -248,8 +246,8 @@ class StreamingSegmenter:
     def _reuse_spec(self, spec, idx, start, end, audio):
         """The speculative text for segment [start, end) if a speculation covered
         its start and everything after it is silent, else None. Silent = under the
-        absolute pause peak AND no 32ms frame louder than the pause's own noise floor
-        × floor_ratio AND speech_fn finds nothing. Wrongly reusing drops words, a
+        absolute pause peak AND no STREAM_SPEC_MIN_RUN consecutive 32ms frames louder
+        than the pause's own noise floor × floor_ratio AND speech_fn finds nothing. Wrongly reusing drops words, a
         miss only costs latency, so every check errs toward a miss. Runs on the
         worker, so the VAD model is never used concurrently."""
         with self._lock:
@@ -260,8 +258,10 @@ class StreamingSegmenter:
         if len(rest):
             ratios = _frame_rms(rest) / max(latest.floor, 1e-4)
             loud = ratios > self._floor_ratio
+            run = _longest_run(loud)
             why = ("peak" if float(np.max(np.abs(rest))) >= self._silence_peak
-                   else _energy_why(ratios, loud) if loud.any()
+                   else f"energy={float(ratios.max()):.2f},frames={int(loud.sum())},run={run}"
+                   if run >= config.STREAM_SPEC_MIN_RUN
                    else "vad" if self._speech_fn(rest) else None)
             if why:
                 with self._lock:
