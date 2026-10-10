@@ -55,6 +55,16 @@ def _frame_rms(audio):
     return np.asarray(rms, dtype=np.float64)
 
 
+def _energy_why(ratios, loud):
+    """Miss reason for an energy veto: max ratio, frames over the threshold, and
+    the longest consecutive run — words sustain 4+ frames, clicks/flicker 1–2."""
+    run = best = 0
+    for x in loud:
+        run = run + 1 if x else 0
+        best = max(best, run)
+    return f"energy={float(ratios.max()):.2f},frames={int(loud.sum())},run={best}"
+
+
 class StreamingSegmenter:
     def __init__(self, audio_src, transcribe_fn, *, speech_fn=None, poll_s=None, min_seg_s=None,
                  max_seg_s=None, silence_peak=None, silence_win_s=None, spec_win_s=None,
@@ -248,9 +258,10 @@ class StreamingSegmenter:
             return None
         rest = audio[round(len(audio) * (latest.end - start) / (end - start)):]
         if len(rest):
-            ratio = float(_frame_rms(rest).max()) / max(latest.floor, 1e-4)
+            ratios = _frame_rms(rest) / max(latest.floor, 1e-4)
+            loud = ratios > self._floor_ratio
             why = ("peak" if float(np.max(np.abs(rest))) >= self._silence_peak
-                   else f"energy={ratio:.2f}" if ratio > self._floor_ratio
+                   else _energy_why(ratios, loud) if loud.any()
                    else "vad" if self._speech_fn(rest) else None)
             if why:
                 with self._lock:
