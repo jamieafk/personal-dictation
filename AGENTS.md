@@ -29,7 +29,7 @@ Grant **Input Monitoring** (hotkey CGEvent tap), **Accessibility** (CGEvent Cmd+
 - `segmenter.py` — streaming: closes speech segments at pauses during the hold, transcribes in background (poll thread + serial worker); speculative tail at short pauses
 - `postprocess.py` — fuzzy vocab, filler removal, stutter collapse
 - `paste.py` — clipboard save/restore + CGEvent Cmd+V (needs PostEvent, granted via Accessibility)
-- `overlay.py` — floating waveform NSPanel: recording, processing-pulse, discard modes
+- `overlay.py` — floating Siri-style wave NSPanel: recording, processing line, discard (amber shake + fade) modes; one 60fps timer drives all three
 - `config.py` — single source of truth: `CONFIG_DIR` + all behavioral tunables (paste delay, gain cap, thresholds, streaming)
 - `launch.py` (root) — py2app entry point, sets sys.path, imports `src.app`
 
@@ -50,7 +50,7 @@ Grant **Input Monitoring** (hotkey CGEvent tap), **Accessibility** (CGEvent Cmd+
 - **NSPasteboard ops must handle None items/types.**
 - **VAD runs before normalization** — Silero trained on real mic levels; post-gain noise triggers false positives.
 - **rumps swallows exceptions in menu callbacks silently** — wrap handlers with the `_logged` decorator in `app.py`.
-- **Track and invalidate every overlay NSTimer on each state change** — repeating animation timer + one-shot discard auto-hide. `_cancel_discard` is called in `show`/`show_processing`/`hide`/`flash_discard`; a stale discard timer otherwise hides the pill mid-recording.
+- **Don't add a second overlay timer** — discard auto-hide happens inside `_tick` only while the mode is still `discard`, so a new recording can't be hidden by a stale one. A separate one-shot hide timer once did exactly that, mid-recording.
 - **Clipboard insertion is serialized** — `paste.insert_text` holds a module-level lock around save→set→paste→restore; concurrent inserts (re-paste click mid-paste) clobber the saved clipboard.
 - **Every text `open()` and the log handler need `encoding="utf-8"`** — launchd can run with an ASCII locale; a default `open()` raised on "ń" in `history.append` after the paste had landed (false error + lost entry). For the log handler: default `RotatingFileHandler` silently DROPS any line with non-ASCII (encode raises in `emit`, logging swallows it). Only reproduces in .app/launchd, never in a terminal run. Verify deploys against `~/.config/dictation/dictation.log`.
 - **Worktree `.venv`/`models` symlinks must stay untracked** — `.gitignore` uses slash-less `.venv`/`models` because `.venv/` matches a directory, not a symlink; `git add -A` staged the symlinks once and merging them replaced the real dirs with broken links (forced venv+model rebuild). In a worktree, add explicit paths, never `git add -A`.

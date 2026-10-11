@@ -1,5 +1,10 @@
 # Features
 
+- **Siri-style wave overlay** (2026-10-11) — The recording pill is now three flowing neon-purple waves that swell while you speak and settle to a faint shimmer in pauses.
+  - Processing: the waves merge into one line with a pulse sweeping across. Nothing heard: the line turns amber, shakes "no" and fades.
+  - Fully rounded capsule with a hairline edge, so it stays visible over dark apps; smooth 60fps motion instead of random bar jitter.
+  - Why: The old grey box with jittering bars looked generic and vanished against dark windows.
+
 - **Near-instant paste after a pause** (2026-10-09) — Pause briefly before releasing the hotkey and the text lands almost immediately: the app transcribes what you've said during the pause, so release just pastes it.
   - Measured with the real model: ~0.3s → ~0.015s when you pause ~0.8s before releasing. Releasing mid-sentence behaves as before.
   - Reuses the early transcript only when nothing after it sounds like speech, so a soft last word is never dropped.
