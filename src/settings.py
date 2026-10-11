@@ -12,6 +12,7 @@ SETTINGS_PATH = os.path.join(config.CONFIG_DIR, "settings.json")
 
 DEFAULTS = {
     "hotkey_keycode": 61,  # Right Option
+    "second_hotkey_keycode": None,  # optional, e.g. a key the laptop keyboard has
 }
 
 

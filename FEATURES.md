@@ -1,5 +1,9 @@
 # Features
 
+- **Second hotkey** (2026-10-11) — Settings has an optional second hold-to-talk key, and both work at all times, so the desk keyboard and the laptop keyboard can each use a key they actually have (e.g. Page Down + Right Command).
+  - Whichever key starts a dictation owns it; pressing the other mid-dictation does nothing. Clear removes it; choosing the same key twice is rejected.
+  - Why: Laptop keyboards have no Page Down, and holding fn+↓ to talk is awkward.
+
 - **Siri-style wave overlay** (2026-10-11) — The recording pill is now three flowing neon-purple waves that swell while you speak and settle to a faint shimmer in pauses.
   - Processing: the waves merge into one line with a pulse sweeping across. Nothing heard: the line turns amber, shakes "no" and fades.
   - Fully rounded capsule with a hairline edge, so it stays visible over dark apps; smooth 60fps motion instead of random bar jitter.

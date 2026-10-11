@@ -752,7 +752,7 @@ def test_hotkey():
         return hotkey._event_callback(None, t, e, None)
 
     ALT = Quartz.kCGEventFlagMaskAlternate
-    hotkey._keycode = 61
+    hotkey._keycodes = (61,)
     mod(61, ALT); mod(61, 0)
     report("Right Option hold -> press, release", calls == ["press", "release"], repr(calls))
 
@@ -763,7 +763,7 @@ def test_hotkey():
     mod(58, 0)
 
     calls.clear()
-    hotkey._keycode = 54  # Right Command
+    hotkey._keycodes = (54,)  # Right Command
     mod(61, ALT); mod(61, 0)
     report("non-selected modifier ignored", calls == [], repr(calls))
     mod(54, Quartz.kCGEventFlagMaskCommand); key(53, True)
@@ -772,12 +772,34 @@ def test_hotkey():
     report("release after Escape-cancel is ignored", calls == ["press", "cancel"], repr(calls))
 
     calls.clear()
-    hotkey._keycode = 105  # F13: active tap, swallowed
+    hotkey._keycodes = (105,)  # F13: active tap, swallowed
     down = key(105, True); rep = key(105, True, repeat=True); up = key(105, False)
     report("F13 hold -> press, release; autorepeat ignored",
            calls == ["press", "release"], repr(calls))
     report("F13 events swallowed", down is None and rep is None and up is None)
     report("other keys pass through", key(0, True) is not None)
+
+    # --- two hotkeys: desk Page Down + laptop Right Command ---
+    CMD = Quartz.kCGEventFlagMaskCommand
+    hotkey._keycodes = (121, 54)
+    calls.clear()
+    mod(54, CMD); mod(54, 0)
+    report("two keys: Right Command dictates", calls == ["press", "release"], repr(calls))
+    calls.clear()
+    down = key(121, True); up = key(121, False)
+    report("two keys: Page Down dictates", calls == ["press", "release"], repr(calls))
+    report("two keys: Page Down still swallowed", down is None and up is None)
+    calls.clear()
+    key(121, True); mod(54, CMD); mod(54, 0); key(121, False)
+    report("two keys: other key ignored while Page Down held",
+           calls == ["press", "release"], repr(calls))
+    calls.clear()
+    mod(54, CMD); key(121, True); key(121, False); mod(54, 0)
+    report("two keys: other key ignored while Right Command held",
+           calls == ["press", "release"], repr(calls))
+    report("two keys: duplicate rejected", hotkey.set_hotkeys((54, 54)) is not None)
+    report("two keys: typing key rejected", hotkey.set_hotkeys((121, 0)) is not None)
+    report("two keys: label", hotkey.keys_label((121, 54)) == "Page Down + Right Command")
 
     report("validate: letter rejected", hotkey.validate_key(0) is not None)
     report("validate: Escape rejected", hotkey.validate_key(53) is not None)
@@ -789,7 +811,7 @@ def test_hotkey():
     # --- key recorder ---
     calls.clear()
     got = []
-    hotkey._keycode = 61
+    hotkey._keycodes = (61,)
     hotkey.begin_capture(got.append)
     mod(61, ALT)
     report("capture: modifier not captured on press", got == [], repr(got))
@@ -813,6 +835,10 @@ def test_hotkey():
         report("settings default", settings.load()["hotkey_keycode"] == 61)
         settings.save(hotkey_keycode=105)
         report("settings round-trip", settings.load()["hotkey_keycode"] == 105)
+        report("second key off by default", settings.load()["second_hotkey_keycode"] is None)
+        settings.save(second_hotkey_keycode=54)
+        s = settings.load()
+        report("second key round-trip", s["second_hotkey_keycode"] == 54 and s["hotkey_keycode"] == 105)
         with open(settings.SETTINGS_PATH, "w") as f:
             f.write("{not json")
         report("corrupt settings -> defaults", settings.load()["hotkey_keycode"] == 61)

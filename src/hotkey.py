@@ -1,4 +1,5 @@
-"""Global hotkey via CGEvent tap. Hold-to-talk on a configurable key + Escape cancel.
+"""Global hotkey via CGEvent tap. Hold-to-talk on one or two configurable keys
+(e.g. Page Down on a desk keyboard + Right Command on the laptop) + Escape cancel.
 
 Modifier hotkeys (Option, Command, ...) arrive as kCGEventFlagsChanged and need
 only a listen-only tap (Input Monitoring). Other allowed keys (F-keys, arrows,
@@ -66,9 +67,9 @@ def is_modifier(keycode: int) -> bool:
 
 
 # State
-_keycode = DEFAULT_KEYCODE
+_keycodes = (DEFAULT_KEYCODE,)
+_held: Optional[int] = None  # hotkey that started the current dictation; the other is ignored
 _press_time = 0.0
-_is_pressed = False
 _tap = None
 _source = None
 
@@ -114,17 +115,17 @@ def _capture_event(event_type, event):
             _capture_cb(keycode)
 
 
-def _press():
-    global _is_pressed, _press_time
-    _is_pressed = True
+def _press(keycode: int):
+    global _held, _press_time
+    _held = keycode
     _press_time = time.monotonic()
     if _on_press:
         _on_press()
 
 
 def _release():
-    global _is_pressed
-    _is_pressed = False
+    global _held
+    _held = None
     if time.monotonic() - _press_time < config.HOLD_CANCEL_S:
         if _on_cancel:
             _on_cancel()
@@ -134,7 +135,7 @@ def _release():
 
 def _event_callback(proxy, event_type, event, refcon):
     """CGEvent tap callback. Fires on the main thread."""
-    global _is_pressed, _timeout_count, _timeout_window_start, _events_seen
+    global _held, _timeout_count, _timeout_window_start, _events_seen
 
     # Re-enable tap if macOS disabled it due to timeout
     if event_type == Quartz.kCGEventTapDisabledByTimeout:
@@ -162,35 +163,35 @@ def _event_callback(proxy, event_type, event, refcon):
     keycode = _keycode_of(event)
 
     # Escape key cancels recording
-    if event_type == Quartz.kCGEventKeyDown and _is_pressed and keycode == ESCAPE_KEYCODE:
-        _is_pressed = False
+    if event_type == Quartz.kCGEventKeyDown and _held is not None and keycode == ESCAPE_KEYCODE:
+        _held = None
         if _on_cancel:
             _on_cancel()
         return event
 
-    if keycode != _keycode:
+    if keycode not in _keycodes:
         return event
 
-    if is_modifier(_keycode):
+    if is_modifier(keycode):
         if event_type == Quartz.kCGEventFlagsChanged:
-            # Each flagsChanged for our keycode is a state change of that key. The
-            # mask tells "down" only when we aren't already holding it (the twin
-            # left/right modifier can keep the shared mask set on release).
-            if not _is_pressed and _modifier_down(keycode, Quartz.CGEventGetFlags(event)):
-                _press()
-            elif _is_pressed:
+            # Each flagsChanged for a hotkey keycode is a state change of that key.
+            # The mask tells "down" only when nothing is held (the twin left/right
+            # modifier can keep the shared mask set on release).
+            if _held is None and _modifier_down(keycode, Quartz.CGEventGetFlags(event)):
+                _press(keycode)
+            elif _held == keycode:
                 _release()
         return event
 
     # Non-modifier hotkey: swallow its events (active tap) so it doesn't also act
     # in the focused app.
     if event_type == Quartz.kCGEventKeyDown:
-        if not _is_pressed and not Quartz.CGEventGetIntegerValueField(
+        if _held is None and not Quartz.CGEventGetIntegerValueField(
                 event, Quartz.kCGKeyboardEventAutorepeat):
-            _press()
+            _press(keycode)
         return None
     if event_type == Quartz.kCGEventKeyUp:
-        if _is_pressed:
+        if _held == keycode:
             _release()
         return None
     return event
@@ -201,18 +202,27 @@ def events_seen() -> int:
     return _events_seen
 
 
-def current_keycode() -> int:
-    return _keycode
+def current_keycodes() -> tuple:
+    return _keycodes
+
+
+def keys_label(keycodes) -> str:
+    return " + ".join(key_label(k) for k in keycodes)
+
+
+def _cancel_held():
+    global _held
+    if _held is not None:
+        _held = None
+        if _on_cancel:
+            _on_cancel()
 
 
 def begin_capture(callback: Callable[[int], None]):
     """Route the next key to callback(keycode) instead of dictating (Settings
     recorder). Cancels a dictation in progress."""
-    global _capture_cb, _capture_mod, _is_pressed
-    if _is_pressed:
-        _is_pressed = False
-        if _on_cancel:
-            _on_cancel()
+    global _capture_cb, _capture_mod
+    _cancel_held()
     _capture_mod = None
     _capture_cb = callback
 
@@ -223,8 +233,9 @@ def end_capture():
     _capture_mod = None
 
 
-def _create_tap(keycode: int):
-    listen_only = is_modifier(keycode)
+def _create_tap(keycodes):
+    # One non-modifier key is enough to need the active tap.
+    listen_only = all(is_modifier(k) for k in keycodes)
     event_mask = (
         Quartz.CGEventMaskBit(Quartz.kCGEventFlagsChanged)
         | Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
@@ -265,43 +276,43 @@ def setup_hotkey(
     on_release: Callable,
     on_cancel: Callable,
     on_tap_lost: Optional[Callable] = None,
-    keycode: int = DEFAULT_KEYCODE,
+    keycodes: tuple = (DEFAULT_KEYCODE,),
 ) -> bool:
-    """Set up the CGEvent tap for the hotkey + Escape cancel. Call on the main thread.
+    """Set up the CGEvent tap for the hotkeys + Escape cancel. Call on the main thread.
     Returns True if successful, False if the permission is missing."""
-    global _on_press, _on_release, _on_cancel, _on_tap_lost, _keycode
+    global _on_press, _on_release, _on_cancel, _on_tap_lost, _keycodes
 
     _on_press = on_press
     _on_release = on_release
     _on_cancel = on_cancel
     _on_tap_lost = on_tap_lost
 
-    tap = _create_tap(keycode)
+    tap = _create_tap(keycodes)
     if tap is None:
         return False
     _remove_tap()
-    _keycode = keycode
+    _keycodes = tuple(keycodes)
     _install_tap(tap)
     return True
 
 
-def set_hotkey(keycode: int) -> Optional[str]:
-    """Switch the hotkey live. Main thread. Returns an error message, or None on
+def set_hotkeys(keycodes: tuple) -> Optional[str]:
+    """Switch the hotkeys live. Main thread. Returns an error message, or None on
     success. The old tap stays in place if the new one can't be created."""
-    global _is_pressed, _keycode
-    err = validate_key(keycode)
-    if err:
-        return err
-    tap = _create_tap(keycode)
+    global _keycodes
+    for keycode in keycodes:
+        err = validate_key(keycode)
+        if err:
+            return err
+    if len(set(keycodes)) != len(keycodes):
+        return "That key is already set — pick a different one."
+    tap = _create_tap(keycodes)
     if tap is None:
         return ("Couldn't watch that key — function keys need Accessibility permission "
                 "for Personal Dictation.")
-    if _is_pressed:
-        _is_pressed = False
-        if _on_cancel:
-            _on_cancel()
+    _cancel_held()
     _remove_tap()
-    _keycode = keycode
+    _keycodes = tuple(keycodes)
     _install_tap(tap)
-    log.info("Hotkey set to %s (keycode %d)", key_label(keycode), keycode)
+    log.info("Hotkey set to %s (keycodes %s)", keys_label(keycodes), list(keycodes))
     return None

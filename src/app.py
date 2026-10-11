@@ -210,12 +210,22 @@ class DictationApp(rumps.App):
         from src.settings_window import SettingsWindowController
         SettingsWindowController.show(self._change_hotkey)
 
-    def _change_hotkey(self, keycode: int):
-        """Main thread (Settings recorder). Returns an error message or None."""
-        err = hotkey.set_hotkey(keycode)
+    @staticmethod
+    def _keys(primary, second) -> tuple:
+        return (primary,) if second is None else (primary, second)
+
+    def _change_hotkey(self, slot: int, keycode):
+        """Main thread (Settings recorder). slot 0 = main key, 1 = second key
+        (keycode None clears it). Returns an error message or None."""
+        primary, second = self._hotkey_keycode, self._second_hotkey
+        if slot == 0:
+            primary = keycode
+        else:
+            second = keycode
+        err = hotkey.set_hotkeys(self._keys(primary, second))
         if err is None:
-            self._hotkey_keycode = keycode
-            settings.save(hotkey_keycode=keycode)
+            self._hotkey_keycode, self._second_hotkey = primary, second
+            settings.save(hotkey_keycode=primary, second_hotkey_keycode=second)
             self._clear_problem("hotkey")
         return err
 
@@ -504,7 +514,8 @@ class DictationApp(rumps.App):
 
     def _setup_hotkey(self) -> bool:
         return hotkey.setup_hotkey(self._on_press, self._on_release, self._on_cancel,
-                                   self._on_tap_lost, keycode=self._hotkey_keycode)
+                                   self._on_tap_lost,
+                                   keycodes=self._keys(self._hotkey_keycode, self._second_hotkey))
 
     def _show_problem(self, key: str):
         """Main thread: show a ⚠ menu item for a permission problem and poll so a
@@ -612,11 +623,18 @@ class DictationApp(rumps.App):
                 AVMediaTypeAudio, lambda granted: None
             )
 
-        self._hotkey_keycode = settings.load()["hotkey_keycode"]
+        stored = settings.load()
+        self._hotkey_keycode = stored["hotkey_keycode"]
         if hotkey.validate_key(self._hotkey_keycode):
             log.warning("Stored hotkey %r invalid — using default", self._hotkey_keycode)
             self._hotkey_keycode = hotkey.DEFAULT_KEYCODE
-        log.info("Hotkey: %s", hotkey.key_label(self._hotkey_keycode))
+        self._second_hotkey = stored["second_hotkey_keycode"]
+        if self._second_hotkey is not None and (
+                hotkey.validate_key(self._second_hotkey)
+                or self._second_hotkey == self._hotkey_keycode):
+            log.warning("Stored second hotkey %r invalid — ignoring", self._second_hotkey)
+            self._second_hotkey = None
+        log.info("Hotkey: %s", hotkey.keys_label(self._keys(self._hotkey_keycode, self._second_hotkey)))
 
         # Set up the global hotkey — if it fails, still run (show menubar) but make
         # the broken state visible and recoverable instead of silently showing "ready".

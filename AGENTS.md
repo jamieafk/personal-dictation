@@ -23,7 +23,7 @@ Grant **Input Monitoring** (hotkey CGEvent tap), **Accessibility** (CGEvent Cmd+
 
 `src/` modules, one responsibility each. Non-obvious ones:
 - `app.py` — rumps menubar app, state machine, orchestrator; `PROBLEMS` = ⚠ menu items for missing/stale grants (startup preflight + tap watchdog), self-clearing
-- `hotkey.py` — configurable hold key. Modifiers: `flagsChanged` on a listen-only tap (Input Monitoring). F-keys/arrows: keyDown/keyUp swallowed on an active tap (Accessibility). Capture mode feeds the Settings recorder
+- `hotkey.py` — one or two configurable hold keys (`_keycodes`; `_held` = the key that started the dictation, the other is ignored until it's released). Modifiers: `flagsChanged` on a listen-only tap (Input Monitoring). F-keys/arrows: keyDown/keyUp swallowed on an active tap (Accessibility) — one such key makes the whole tap active. Capture mode feeds the Settings recorder
 - `settings.py` / `settings_window.py` — `settings.json` + the hotkey recorder window
 - `audio.py` — sounddevice capture at native rate, downsample to 16kHz; streaming accessors `samples_captured`/`recent_peak`/`extract_16k`/`stop_stream`
 - `segmenter.py` — streaming: closes speech segments at pauses during the hold, transcribes in background (poll thread + serial worker); speculative tail at short pauses
